@@ -1,0 +1,10 @@
+import type { DailyPuzzleRepository } from "../../domain/repositories";
+import type { DailyPuzzleDTO } from "../../domain/types";
+
+export class DailyPuzzleService {
+  constructor(private readonly dailyPuzzleRepo: DailyPuzzleRepository) {}
+
+  async getTodayPublishedPuzzle(dateIso: string): Promise<DailyPuzzleDTO | null> {
+    return this.dailyPuzzleRepo.getPublishedPuzzleByDate(dateIso);
+  }
+}

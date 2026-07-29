@@ -1,0 +1,31 @@
+project                 = "football-chain"
+environment             = "dev"
+aws_region              = "ap-southeast-2"
+availability_zones      = ["ap-southeast-2a", "ap-southeast-2b"]
+
+vpc_cidr                = "10.20.0.0/16"
+public_subnet_cidrs     = ["10.20.0.0/24", "10.20.1.0/24"]
+private_app_subnet_cidrs = ["10.20.10.0/24", "10.20.11.0/24"]
+private_db_subnet_cidrs  = ["10.20.20.0/24", "10.20.21.0/24"]
+enable_nat_gateway      = true
+
+app_port                = 3000
+health_check_path       = "/api/health"
+app_image_tag           = "latest"
+ecs_cpu                 = 512
+ecs_memory              = 1024
+ecs_desired_count       = 1
+
+db_name                 = "football_chain"
+db_username             = "lachlang1"
+db_password             = "replace-this"
+db_instance_class       = "db.t4g.micro"
+db_allocated_storage    = 20
+db_backup_retention_days = 7
+db_deletion_protection  = false
+
+log_retention_days      = 14
+alarm_email             = ""
+
+enable_daily_scheduler  = false
+daily_schedule_expression = "cron(0 0 * * ? *)"

@@ -1,0 +1,31 @@
+project                 = "football-chain"
+environment             = "prod"
+aws_region              = "ap-southeast-2"
+availability_zones      = ["ap-southeast-2a", "ap-southeast-2b"]
+
+vpc_cidr                = "10.30.0.0/16"
+public_subnet_cidrs     = ["10.30.0.0/24", "10.30.1.0/24"]
+private_app_subnet_cidrs = ["10.30.10.0/24", "10.30.11.0/24"]
+private_db_subnet_cidrs  = ["10.30.20.0/24", "10.30.21.0/24"]
+enable_nat_gateway      = true
+
+app_port                = 3000
+health_check_path       = "/api/health"
+app_image_tag           = "latest"
+ecs_cpu                 = 1024
+ecs_memory              = 2048
+ecs_desired_count       = 2
+
+db_name                 = "football_chain"
+db_username             = "postgres"
+db_password             = "replace-this"
+db_instance_class       = "db.t4g.small"
+db_allocated_storage    = 50
+db_backup_retention_days = 14
+db_deletion_protection  = true
+
+log_retention_days      = 30
+alarm_email             = "alerts@example.com"
+
+enable_daily_scheduler  = true
+daily_schedule_expression = "cron(0 0 * * ? *)"

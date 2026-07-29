@@ -1,0 +1,19 @@
+# Node
+node_modules/
+
+# Local env
+.env
+.env.local
+
+# Terraform local/runtime files
+**/.terraform/
+**/.terraform.lock.hcl
+**/terraform.tfstate
+**/terraform.tfstate.*
+**/terraform.tfvars
+crash.log
+
+# Build outputs
+.next/
+dist/
+coverage/
