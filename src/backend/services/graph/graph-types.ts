@@ -9,12 +9,13 @@ export interface GraphNode {
 
 export interface GraphBuildInput {
   datasetVersionId: number;
-  edges: Array<{ playerId: number; clubId: number }>;
+  edges: Array<{ playerId: number; clubId: number; playerName?: string; clubName?: string }>;
 }
 
 export interface GraphService {
   rebuild(input: GraphBuildInput): void;
   hasEdge(a: GraphNode, b: GraphNode): boolean;
+  getNodeName(node: GraphNode): string | null;
   shortestPathPlayerToPlayer(startPlayerId: number, targetPlayerId: number): GraphNode[] | null;
 }
 

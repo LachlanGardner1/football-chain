@@ -2,6 +2,66 @@ import pg from "pg";
 
 const { Pool } = pg;
 
+interface GraphEdge {
+  playerId: number;
+  clubId: number;
+}
+
+interface GraphNode {
+  id: number;
+  type: "PLAYER" | "CLUB";
+}
+
+function toNodeId(node: GraphNode): string {
+  return `${node.type}:${node.id}`;
+}
+
+function buildShortestPathLength(startPlayerId: number, targetPlayerId: number, edges: GraphEdge[]): number | null {
+  const adjacency = new Map<string, Set<string>>();
+
+  for (const edge of edges) {
+    const playerNode = { id: edge.playerId, type: "PLAYER" as const };
+    const clubNode = { id: edge.clubId, type: "CLUB" as const };
+
+    const playerId = toNodeId(playerNode);
+    const clubId = toNodeId(clubNode);
+
+    if (!adjacency.has(playerId)) adjacency.set(playerId, new Set<string>());
+    if (!adjacency.has(clubId)) adjacency.set(clubId, new Set<string>());
+
+    adjacency.get(playerId)!.add(clubId);
+    adjacency.get(clubId)!.add(playerId);
+  }
+
+  const startNodeId = toNodeId({ id: startPlayerId, type: "PLAYER" });
+  const targetNodeId = toNodeId({ id: targetPlayerId, type: "PLAYER" });
+
+  if (startNodeId === targetNodeId) return 1;
+
+  const queue: string[][] = [[startNodeId]];
+  const visited = new Set<string>([startNodeId]);
+
+  while (queue.length > 0) {
+    const path = queue.shift()!;
+    const currentNodeId = path[path.length - 1];
+
+    if (currentNodeId === targetNodeId) {
+      return path.length;
+    }
+
+    const neighbors = adjacency.get(currentNodeId);
+    if (!neighbors) continue;
+
+    for (const neighbor of neighbors) {
+      if (visited.has(neighbor)) continue;
+      visited.add(neighbor);
+      queue.push([...path, neighbor]);
+    }
+  }
+
+  return null;
+}
+
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
   throw new Error("DATABASE_URL is required.");
@@ -147,6 +207,21 @@ async function run(): Promise<void> {
       );
     }
 
+    const graphEdges = edges.map((edge) => ({
+      playerId: playerIds.get(edge.player)!,
+      clubId: clubIds.get(edge.club)!,
+    }));
+
+    const optimalLength = buildShortestPathLength(
+      playerIds.get("Harry Kane")!,
+      playerIds.get("Ronaldinho")!,
+      graphEdges,
+    );
+
+    if (optimalLength === null) {
+      throw new Error("Could not compute shortest path for the seeded daily puzzle.");
+    }
+
     await client.query(
       `INSERT INTO daily_puzzles (
          puzzle_date,
@@ -171,7 +246,7 @@ async function run(): Promise<void> {
         new Date().toISOString().slice(0, 10),
         playerIds.get("Harry Kane"),
         playerIds.get("Ronaldinho"),
-        8,
+        optimalLength,
         datasetVersionId,
       ],
     );

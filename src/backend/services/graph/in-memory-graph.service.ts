@@ -4,15 +4,23 @@ import { fromNodeId, toNodeId } from "./graph-types";
 export class InMemoryGraphService implements GraphService {
   private datasetVersionId: number | null = null;
   private adjacency = new Map<string, Set<string>>();
+  private labels = new Map<string, string>();
 
   rebuild(input: GraphBuildInput): void {
     this.datasetVersionId = input.datasetVersionId;
     this.adjacency.clear();
+    this.labels.clear();
 
     for (const edge of input.edges) {
       const player: GraphNode = { id: edge.playerId, type: "PLAYER" };
       const club: GraphNode = { id: edge.clubId, type: "CLUB" };
       this.connect(player, club);
+      if (edge.playerName) {
+        this.labels.set(toNodeId(player), edge.playerName);
+      }
+      if (edge.clubName) {
+        this.labels.set(toNodeId(club), edge.clubName);
+      }
     }
   }
 
@@ -20,6 +28,10 @@ export class InMemoryGraphService implements GraphService {
     const aId = toNodeId(a);
     const bId = toNodeId(b);
     return this.adjacency.get(aId)?.has(bId) ?? false;
+  }
+
+  getNodeName(node: GraphNode): string | null {
+    return this.labels.get(toNodeId(node)) ?? null;
   }
 
   shortestPathPlayerToPlayer(startPlayerId: number, targetPlayerId: number): GraphNode[] | null {
@@ -64,11 +76,20 @@ export class InMemoryGraphService implements GraphService {
     const aId = toNodeId(a);
     const bId = toNodeId(b);
 
-    if (!this.adjacency.has(aId)) this.adjacency.set(aId, new Set<string>());
-    if (!this.adjacency.has(bId)) this.adjacency.set(bId, new Set<string>());
+    let neighborsA = this.adjacency.get(aId);
+    if (!neighborsA) {
+      neighborsA = new Set<string>();
+      this.adjacency.set(aId, neighborsA);
+    }
 
-    this.adjacency.get(aId)!.add(bId);
-    this.adjacency.get(bId)!.add(aId);
+    let neighborsB = this.adjacency.get(bId);
+    if (!neighborsB) {
+      neighborsB = new Set<string>();
+      this.adjacency.set(bId, neighborsB);
+    }
+
+    neighborsA.add(bId);
+    neighborsB.add(aId);
   }
 
   private expandOneLayer(
