@@ -1,19 +1,15 @@
-import { NextResponse } from "next/server";
-import { ensureServicesReady, services } from "../../../../backend/wiring/container";
+import { NextResponse, type NextRequest } from "next/server";
+import { services } from "../../../../backend/wiring/container";
+import { attachSessionCookie, resolveSession } from "../../../../backend/services/auth/session.service";
 
-function resolveUserId(req: Request): string | null {
-  const userId = req.headers.get("x-user-id");
-  return userId && userId.length > 0 ? userId : null;
-}
+export async function GET(request: NextRequest) {
+  const session = resolveSession(request);
 
-export async function GET(request: Request) {
-  await ensureServicesReady();
-  const userId = resolveUserId(request);
+  const stats = session.isNew
+    ? { solvedCount: 0, currentStreak: 0, maxStreak: 0, bestChainLength: null }
+    : await services.results.getUserStats(session.userId);
 
-  if (!userId) {
-    return NextResponse.json({ error: "Missing x-user-id header." }, { status: 400 });
-  }
-
-  const stats = await services.results.getUserStats(userId);
-  return NextResponse.json(stats, { status: 200 });
+  const response = NextResponse.json(stats, { status: 200 });
+  attachSessionCookie(response, session.userId);
+  return response;
 }

@@ -1,23 +1,25 @@
-import { NextResponse } from "next/server";
-import { ensureServicesReady, services } from "../../../backend/wiring/container";
+import { NextResponse, type NextRequest } from "next/server";
+import { services } from "../../../backend/wiring/container";
+import { attachSessionCookie, resolveSession } from "../../../backend/services/auth/session.service";
 
 interface CompleteBody {
-  userId: string;
   puzzleId: number;
   solved: boolean;
   chainLength?: number;
 }
 
-export async function POST(request: Request) {
-  await ensureServicesReady();
+export async function POST(request: NextRequest) {
   const body = (await request.json()) as CompleteBody;
+  const session = resolveSession(request);
 
   await services.results.recordAttempt({
-    userId: body.userId,
+    userId: session.userId,
     puzzleId: body.puzzleId,
     solved: body.solved,
     chainLength: body.chainLength,
   });
 
-  return NextResponse.json({ ok: true }, { status: 200 });
+  const response = NextResponse.json({ ok: true }, { status: 200 });
+  attachSessionCookie(response, session.userId);
+  return response;
 }
