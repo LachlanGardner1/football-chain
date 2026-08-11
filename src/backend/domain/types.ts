@@ -20,8 +20,7 @@ export interface Club {
 export interface DailyPuzzle {
   id: number;
   puzzleDate: string;
-  startPlayerId: number;
-  targetPlayerId: number;
+  anchorPlayerIds: number[];
   optimalLength: number;
   datasetVersionId: number;
   status: "DRAFT" | "PUBLISHED" | "ARCHIVED";
@@ -42,8 +41,8 @@ export interface ValidationResult {
 export interface DailyPuzzleDTO {
   puzzleId: number;
   date: string;
-  startPlayer: { id: number; name: string };
-  targetPlayer: { id: number; name: string };
+  anchorPlayers: Array<{ id: number; name: string }>;
+  optimalLength?: number;
 }
 
 export interface UserStatsDTO {

@@ -7,13 +7,17 @@ import type {
 } from "./types";
 
 export interface DailyPuzzleRepository {
-  getPublishedPuzzleByDate(date: string): Promise<DailyPuzzleDTO | null>;
+  getPublishedPuzzleByDate(date: string, options?: { strict?: boolean }): Promise<DailyPuzzleDTO | null>;
   getPuzzleById(puzzleId: number): Promise<DailyPuzzle | null>;
+  getPublishedDates(): Promise<{ dates: string[]; today: string }>;
 }
 
 export interface GraphRepository {
   getActiveDatasetVersionId(): Promise<number>;
-  loadPlayerClubEdges(datasetVersionId: number): Promise<Array<{ playerId: number; clubId: number }>>;
+  loadPlayerClubEdges(datasetVersionId: number): Promise<Array<{ playerId: number; clubId: number; playerName?: string; clubName?: string }>>;
+  hasPlayerClubEdge(datasetVersionId: number, playerId: number, clubId: number): Promise<boolean>;
+  getPlayerName(playerId: number): Promise<string | null>;
+  getClubName(clubId: number): Promise<string | null>;
 }
 
 export interface GameResultRepository {
@@ -30,7 +34,6 @@ export interface GameResultRepository {
 export interface ChainValidator {
   validateChain(params: {
     chain: ChainNodeInput[];
-    startPlayerId: number;
-    targetPlayerId: number;
+    anchorPlayerIds: number[];
   }): Promise<ValidationResult>;
 }

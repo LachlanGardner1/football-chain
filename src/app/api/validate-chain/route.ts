@@ -1,21 +1,31 @@
 import { NextResponse } from "next/server";
-import { ensureServicesReady, services } from "../../../backend/wiring/container";
+import { services } from "../../../backend/wiring/container";
 import type { ChainNodeInput } from "../../../backend/domain/types";
 
 interface ValidateChainBody {
-  startPlayerId: number;
-  targetPlayerId: number;
+  anchorPlayerIds: number[];
   chain: ChainNodeInput[];
 }
 
 export async function POST(request: Request) {
-  await ensureServicesReady();
   const body = (await request.json()) as ValidateChainBody;
+
+  console.info('[football-chain] validate-chain request', {
+    chainLength: body.chain.length,
+    anchorPlayerIds: body.anchorPlayerIds,
+    chain: body.chain,
+  });
 
   const result = await services.chainValidation.validateChain({
     chain: body.chain,
-    startPlayerId: body.startPlayerId,
-    targetPlayerId: body.targetPlayerId,
+    anchorPlayerIds: body.anchorPlayerIds,
+  });
+
+  console.info('[football-chain] validate-chain response', {
+    valid: result.valid,
+    solved: result.solved,
+    reason: result.reason,
+    chainLength: result.chainLength,
   });
 
   return NextResponse.json(result, { status: 200 });

@@ -1,66 +1,8 @@
 import pg from "pg";
 
+import { findShortestAnchorChain, type GraphEdge } from "./puzzle-generation/solver";
+
 const { Pool } = pg;
-
-interface GraphEdge {
-  playerId: number;
-  clubId: number;
-}
-
-interface GraphNode {
-  id: number;
-  type: "PLAYER" | "CLUB";
-}
-
-function toNodeId(node: GraphNode): string {
-  return `${node.type}:${node.id}`;
-}
-
-function buildShortestPathLength(startPlayerId: number, targetPlayerId: number, edges: GraphEdge[]): number | null {
-  const adjacency = new Map<string, Set<string>>();
-
-  for (const edge of edges) {
-    const playerNode = { id: edge.playerId, type: "PLAYER" as const };
-    const clubNode = { id: edge.clubId, type: "CLUB" as const };
-
-    const playerId = toNodeId(playerNode);
-    const clubId = toNodeId(clubNode);
-
-    if (!adjacency.has(playerId)) adjacency.set(playerId, new Set<string>());
-    if (!adjacency.has(clubId)) adjacency.set(clubId, new Set<string>());
-
-    adjacency.get(playerId)!.add(clubId);
-    adjacency.get(clubId)!.add(playerId);
-  }
-
-  const startNodeId = toNodeId({ id: startPlayerId, type: "PLAYER" });
-  const targetNodeId = toNodeId({ id: targetPlayerId, type: "PLAYER" });
-
-  if (startNodeId === targetNodeId) return 1;
-
-  const queue: string[][] = [[startNodeId]];
-  const visited = new Set<string>([startNodeId]);
-
-  while (queue.length > 0) {
-    const path = queue.shift()!;
-    const currentNodeId = path[path.length - 1];
-
-    if (currentNodeId === targetNodeId) {
-      return path.length;
-    }
-
-    const neighbors = adjacency.get(currentNodeId);
-    if (!neighbors) continue;
-
-    for (const neighbor of neighbors) {
-      if (visited.has(neighbor)) continue;
-      visited.add(neighbor);
-      queue.push([...path, neighbor]);
-    }
-  }
-
-  return null;
-}
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
@@ -81,6 +23,10 @@ async function run(): Promise<void> {
 
   try {
     await client.query("BEGIN");
+
+    await client.query(
+      `TRUNCATE TABLE daily_puzzles, player_clubs, users, players, clubs, data_versions RESTART IDENTITY CASCADE`
+    );
 
     const versionResult = await client.query<InsertIdRow>(
       `INSERT INTO data_versions (version_key, source_name, is_active, notes)
@@ -107,6 +53,16 @@ async function run(): Promise<void> {
       "Andrea Pirlo",
       "Ronaldinho",
       "Kaka",
+      "Gianfranco Zola",
+      "Neymar",
+      "Sergio Ramos",
+      "Thierry Henry",
+      "David Beckham",
+      "Paolo Maldini",
+      "Andriy Shevchenko",
+      "Michael Owen",
+      "Edinson Cavani",
+      "Philippe Coutinho",
     ];
 
     const clubs = [
@@ -116,6 +72,19 @@ async function run(): Promise<void> {
       "AC Milan",
       "Paris Saint-Germain",
       "Barcelona",
+      "Chelsea",
+      "Al Hilal",
+      "Borussia Dortmund",
+      "Inter Milan",
+      "Bayern Munich",
+      "Arsenal",
+      "New York Red Bulls",
+      "Manchester United",
+      "Liverpool",
+      "LA Galaxy",
+      "Ajax",
+      "AS Roma",
+      "Bayer Leverkusen",
     ];
 
     const playerIds = new Map<string, number>();
@@ -168,10 +137,12 @@ async function run(): Promise<void> {
 
     const edges: Array<{ player: string; club: string; startYear?: number; endYear?: number }> = [
       { player: "Harry Kane", club: "Tottenham Hotspur", startYear: 2011, endYear: 2023 },
+      { player: "Harry Kane", club: "Bayern Munich", startYear: 2023 },
       { player: "Luka Modric", club: "Tottenham Hotspur", startYear: 2008, endYear: 2012 },
       { player: "Luka Modric", club: "Real Madrid", startYear: 2012 },
       { player: "Cristiano Ronaldo", club: "Real Madrid", startYear: 2009, endYear: 2018 },
       { player: "Cristiano Ronaldo", club: "Juventus", startYear: 2018, endYear: 2021 },
+      { player: "Cristiano Ronaldo", club: "Al Hilal", startYear: 2023 },
       { player: "Andrea Pirlo", club: "Juventus", startYear: 2011, endYear: 2015 },
       { player: "Andrea Pirlo", club: "AC Milan", startYear: 2001, endYear: 2011 },
       { player: "Kaka", club: "AC Milan", startYear: 2003, endYear: 2009 },
@@ -179,6 +150,28 @@ async function run(): Promise<void> {
       { player: "Ronaldinho", club: "Paris Saint-Germain", startYear: 2001, endYear: 2003 },
       { player: "Ronaldinho", club: "Barcelona", startYear: 2003, endYear: 2008 },
       { player: "Ronaldinho", club: "AC Milan", startYear: 2008, endYear: 2011 },
+      { player: "Gianfranco Zola", club: "Chelsea", startYear: 1996, endYear: 2003 },
+      { player: "Neymar", club: "Paris Saint-Germain", startYear: 2017, endYear: 2023 },
+      { player: "Neymar", club: "Barcelona", startYear: 2013, endYear: 2017 },
+      { player: "Sergio Ramos", club: "Real Madrid", startYear: 2005, endYear: 2021 },
+      { player: "Sergio Ramos", club: "Paris Saint-Germain", startYear: 2021, endYear: 2023 },
+      { player: "Thierry Henry", club: "Arsenal", startYear: 1999, endYear: 2007 },
+      { player: "Thierry Henry", club: "Barcelona", startYear: 2007, endYear: 2010 },
+      { player: "Thierry Henry", club: "Paris Saint-Germain", startYear: 2012, endYear: 2014 },
+      { player: "Thierry Henry", club: "New York Red Bulls", startYear: 2010, endYear: 2014 },
+      { player: "David Beckham", club: "Manchester United", startYear: 1992, endYear: 2003 },
+      { player: "David Beckham", club: "Real Madrid", startYear: 2003, endYear: 2009 },
+      { player: "David Beckham", club: "LA Galaxy", startYear: 2011, endYear: 2013 },
+      { player: "Paolo Maldini", club: "AC Milan", startYear: 1984, endYear: 2009 },
+      { player: "Andriy Shevchenko", club: "Chelsea", startYear: 2006, endYear: 2009 },
+      { player: "Andriy Shevchenko", club: "AC Milan", startYear: 1999, endYear: 2006 },
+      { player: "Michael Owen", club: "Liverpool", startYear: 1997, endYear: 2004 },
+      { player: "Michael Owen", club: "Real Madrid", startYear: 2004, endYear: 2005 },
+      { player: "Edinson Cavani", club: "Paris Saint-Germain", startYear: 2013, endYear: 2020 },
+      { player: "Edinson Cavani", club: "Manchester United", startYear: 2020, endYear: 2022 },
+      { player: "Philippe Coutinho", club: "Liverpool", startYear: 2013, endYear: 2018 },
+      { player: "Philippe Coutinho", club: "Barcelona", startYear: 2018, endYear: 2022 },
+      { player: "Philippe Coutinho", club: "Bayern Munich", startYear: 2022, endYear: 2023 },
     ];
 
     for (const edge of edges) {
@@ -207,49 +200,62 @@ async function run(): Promise<void> {
       );
     }
 
-    const graphEdges = edges.map((edge) => ({
+    const graphEdges: GraphEdge[] = edges.map((edge) => ({
       playerId: playerIds.get(edge.player)!,
       clubId: clubIds.get(edge.club)!,
     }));
 
-    const optimalLength = buildShortestPathLength(
-      playerIds.get("Harry Kane")!,
-      playerIds.get("Ronaldinho")!,
-      graphEdges,
-    );
+    const localToday = new Date();
+    const puzzleDate = `${localToday.getFullYear()}-${String(localToday.getMonth() + 1).padStart(2, '0')}-${String(localToday.getDate()).padStart(2, '0')}`;
+    const yesterday = new Date(localToday);
+    yesterday.setDate(localToday.getDate() - 1);
+    const yesterdayDate = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')}`;
 
-    if (optimalLength === null) {
-      throw new Error("Could not compute shortest path for the seeded daily puzzle.");
+    async function seedPuzzle(date: string, anchorNames: string[]): Promise<void> {
+      const anchorIds = anchorNames.map((name) => {
+        const id = playerIds.get(name);
+        if (id === undefined) {
+          throw new Error(`Unknown seeded player: ${name}`);
+        }
+        return id;
+      });
+
+      const chain = findShortestAnchorChain(anchorIds, graphEdges);
+      if (!chain) {
+        throw new Error(`No valid no-repeat chain connects the anchor players for ${date}: ${anchorNames.join(", ")}`);
+      }
+
+      const puzzleResult = await client.query<InsertIdRow>(
+        `INSERT INTO daily_puzzles (puzzle_date, optimal_length, dataset_version_id, status, published_at)
+         VALUES ($1, $2, $3, 'PUBLISHED', NOW())
+         ON CONFLICT (puzzle_date)
+         DO UPDATE SET
+           optimal_length = EXCLUDED.optimal_length,
+           dataset_version_id = EXCLUDED.dataset_version_id,
+           status = 'PUBLISHED',
+           published_at = NOW(),
+           updated_at = NOW()
+         RETURNING id`,
+        [date, chain.length, datasetVersionId],
+      );
+
+      const puzzleId = Number(puzzleResult.rows[0].id);
+
+      await client.query(`DELETE FROM daily_puzzle_players WHERE daily_puzzle_id = $1`, [puzzleId]);
+
+      for (const anchorId of anchorIds) {
+        await client.query(
+          `INSERT INTO daily_puzzle_players (daily_puzzle_id, player_id) VALUES ($1, $2)`,
+          [puzzleId, anchorId],
+        );
+      }
     }
 
-    await client.query(
-      `INSERT INTO daily_puzzles (
-         puzzle_date,
-         start_player_id,
-         target_player_id,
-         optimal_length,
-         dataset_version_id,
-         status,
-         published_at
-       )
-       VALUES ($1, $2, $3, $4, $5, 'PUBLISHED', NOW())
-       ON CONFLICT (puzzle_date)
-       DO UPDATE SET
-         start_player_id = EXCLUDED.start_player_id,
-         target_player_id = EXCLUDED.target_player_id,
-         optimal_length = EXCLUDED.optimal_length,
-         dataset_version_id = EXCLUDED.dataset_version_id,
-         status = 'PUBLISHED',
-         published_at = NOW(),
-         updated_at = NOW()`,
-      [
-        new Date().toISOString().slice(0, 10),
-        playerIds.get("Harry Kane"),
-        playerIds.get("Ronaldinho"),
-        optimalLength,
-        datasetVersionId,
-      ],
-    );
+    // Anchor sets are verified solvable (and optimal_length computed) by
+    // findShortestAnchorChain against the real seeded edges above, rather than
+    // hand-typed and trusted as before.
+    await seedPuzzle(puzzleDate, ["Harry Kane", "Cristiano Ronaldo", "Ronaldinho"]);
+    await seedPuzzle(yesterdayDate, ["Cristiano Ronaldo", "David Beckham", "Andriy Shevchenko"]);
 
     await client.query(
       `INSERT INTO users (id, username)
