@@ -70,17 +70,17 @@ This backlog breaks the next phase of work into smaller, testable stories so pro
 
 ### Story 4.2 — Expand the catalog from imported data
 - [x] Import a larger player/club catalog — 6,066 players / 774 clubs / ~23.8k edges, filtered to players with peak market value >= EUR 8M or >= 20 international caps
-- [ ] Add support for more puzzle generation options
+- [x] Add support for more puzzle generation options — `scripts/puzzle-generation/rotate-puzzles.ts` (`npm run puzzles:rotate`) randomly samples 3-5 anchor players from the full catalog, verifies solvability + difficulty band via the solver, dedupes against the last 60 days of puzzles, and tops up a rolling 7-day buffer of `DRAFT` puzzles; a daily promote step flips today's `DRAFT` puzzle to `PUBLISHED`. Runs both as a local CLI script and as the ops Lambda's `rotate-puzzles` action, triggered daily by `.github/workflows/rotate-puzzles.yml`.
 - [x] Validate imported data for duplicates and broken links — found and removed 3 duplicate club rows (`Ajax` / `AS Roma` / `Bayer Leverkusen` vs. the imported dataset's official names); all 5 previously dead-end clubs now have real edges
 
-**Known follow-up**: `findShortestAnchorChain` (`scripts/puzzle-generation/solver.ts`) is correct but doesn't scale to the full imported graph for anchor sets that are far apart / pass through high-degree "hub" clubs (e.g. Real Madrid, Man City) — a 3-anchor test with Haaland/De Bruyne/Salah ran for several minutes and grew to 1GB+ memory before being killed, while a trivial 2-anchor case (two players who shared a club directly) solved instantly. The unguided branch-and-bound DFS has no distance-based pruning, so it can blow up combinatorially at hub nodes. Whoever picks up real puzzle-generation automation (Theme 4's "more puzzle generation options", or a future rotation pipeline) will need a smarter approach - e.g. precomputing pairwise BFS shortest paths between anchors first to get a strong bound before falling back to backtracking, or restricting candidate anchor sets to reasonably "close" players.
+**Resolved**: the solver-scaling issue previously noted here (`findShortestAnchorChain` blowing up on high-degree "hub" clubs like Real Madrid/Man City — a 3-anchor Haaland/De Bruyne/Salah case ran for minutes at 1GB+ memory) was fixed by guiding the search with precomputed BFS hop-distances from each anchor; the same case now solves in 22ms (see `scripts/puzzle-generation/solver.ts` and its regression test). The rotation pipeline above builds directly on that fix.
 
 ## Theme 5 — Release readiness later
 
 ### Story 5.1 — Add a simple deployment target
-- [ ] Choose a hosting option
-- [ ] Prepare environment variables for production
-- [ ] Deploy the current app to a test environment
+- [x] Choose a hosting option — Lambda (via OpenNext) + CloudFront + S3, RDS Postgres; see `infra/TERRAFORM_CHECKLIST.md`
+- [x] Prepare environment variables for production — `DATABASE_URL`/`SESSION_SECRET` resolved from Secrets Manager into Lambda env vars by Terraform at apply time
+- [ ] Deploy the current app to a test environment — Terraform, the ops Lambda (migrations + puzzle rotation), and the GitHub Actions CI/CD pipeline (`.github/workflows/`) are all written and passing locally, but nothing has actually been applied to AWS yet. Needs the one-time `github-oidc` bootstrap applied first (see `infra/TERRAFORM_CHECKLIST.md`), then a real `deploy.yml` run.
 
 ### Story 5.2 — Add observability basics
 - [ ] Add health endpoint checks
@@ -98,6 +98,6 @@ This backlog breaks the next phase of work into smaller, testable stories so pro
 - [ ] Story 3.2
 - [ ] Story 3.3
 - [x] Story 4.1
-- [ ] Story 4.2 (data imported and validated; "more puzzle generation options" still open)
-- [ ] Story 5.1
+- [x] Story 4.2
+- [ ] Story 5.1 (pipeline built, not yet applied to AWS)
 - [ ] Story 5.2
