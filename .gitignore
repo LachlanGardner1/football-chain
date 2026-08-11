@@ -11,9 +11,12 @@ node_modules/
 **/terraform.tfstate
 **/terraform.tfstate.*
 **/terraform.tfvars
+infra/modules/*/.build/
 crash.log
 
 # Build outputs
 .next/
+.open-next/
 dist/
 coverage/
+tsconfig.tsbuildinfo

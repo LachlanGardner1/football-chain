@@ -9,12 +9,8 @@ variable "private_app_subnet_cidrs" { type = list(string) }
 variable "private_db_subnet_cidrs" { type = list(string) }
 variable "enable_nat_gateway" { type = bool }
 
-variable "app_port" { type = number }
-variable "health_check_path" { type = string }
-variable "app_image_tag" { type = string }
-variable "ecs_cpu" { type = number }
-variable "ecs_memory" { type = number }
-variable "ecs_desired_count" { type = number }
+variable "lambda_memory_size" { type = number }
+variable "lambda_timeout" { type = number }
 
 variable "db_name" { type = string }
 variable "db_username" { type = string }

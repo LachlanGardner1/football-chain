@@ -1,9 +1,4 @@
 variable "project" { type = string }
 variable "environment" { type = string }
 variable "schedule_expression" { type = string }
-variable "cluster_arn" { type = string }
-variable "task_definition_arn" { type = string }
-variable "subnet_ids" { type = list(string) }
-variable "security_group_ids" { type = list(string) }
-variable "task_role_arn" { type = string }
 variable "enabled" { type = bool }

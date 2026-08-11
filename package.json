@@ -4,21 +4,24 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node scripts/cleanup-dev-ports.mjs && next dev",
+    "dev": "node scripts/cleanup-dev-ports.mjs --clear-cache && next dev --hostname 127.0.0.1",
     "build": "next build",
-    "start": "next start",
+    "start": "node scripts/cleanup-dev-ports.mjs && next start",
     "db:migrate": "tsx --tsconfig scripts/tsconfig.json scripts/migrate.ts",
     "db:seed": "tsx --tsconfig scripts/tsconfig.json scripts/seed-dev.ts",
     "db:reset-dev": "npm run db:migrate && npm run db:seed",
-    "test:validation": "node --test --import tsx src/backend/services/game/chain-validation.service.test.ts"
+    "test:validation": "node --test --import tsx src/backend/services/game/chain-validation.service.test.ts",
+    "test": "node --test --import tsx src/app/scoring.test.ts src/app/puzzle-suggestions.test.ts src/backend/repositories/postgres/daily-puzzle.repository.test.ts src/backend/services/game/chain-validation.service.test.ts src/backend/services/auth/session.service.test.ts scripts/puzzle-generation/solver.test.ts"
   },
   "dependencies": {
+    "@phosphor-icons/react": "^2.1.10",
     "next": "^15.3.3",
     "pg": "^8.12.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@opennextjs/aws": "^4.1.0",
     "@types/node": "^22.10.5",
     "@types/pg": "^8.11.10",
     "@types/react": "19.2.17",

@@ -2,44 +2,12 @@ locals {
   name_prefix = "${var.project}-${var.environment}"
 }
 
-resource "aws_security_group" "alb" {
-  name        = "${local.name_prefix}-alb-sg"
-  description = "ALB ingress"
+# Nothing initiates ingress *to* the Lambda function from within the VPC (it only
+# reaches out to RDS), so this security group only needs an egress rule.
+resource "aws_security_group" "lambda" {
+  name        = "${local.name_prefix}-lambda-sg"
+  description = "Lambda app function"
   vpc_id      = var.vpc_id
-
-  ingress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-
-resource "aws_security_group" "ecs" {
-  name        = "${local.name_prefix}-ecs-sg"
-  description = "ECS tasks ingress from ALB"
-  vpc_id      = var.vpc_id
-
-  ingress {
-    from_port       = var.app_port
-    to_port         = var.app_port
-    protocol        = "tcp"
-    security_groups = [aws_security_group.alb.id]
-  }
 
   egress {
     from_port   = 0
@@ -51,14 +19,14 @@ resource "aws_security_group" "ecs" {
 
 resource "aws_security_group" "rds" {
   name        = "${local.name_prefix}-rds-sg"
-  description = "RDS ingress from ECS"
+  description = "RDS ingress from the Lambda app function"
   vpc_id      = var.vpc_id
 
   ingress {
     from_port       = 5432
     to_port         = 5432
     protocol        = "tcp"
-    security_groups = [aws_security_group.ecs.id]
+    security_groups = [aws_security_group.lambda.id]
   }
 
   egress {
