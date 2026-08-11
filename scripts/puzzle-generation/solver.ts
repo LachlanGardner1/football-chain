@@ -7,9 +7,20 @@
 // This exists because the old puzzle-authoring path (a single first-found DFS
 // path, with a hand-typed "required players" list never checked against the
 // graph at all) neither guaranteed a shortest route nor verified solvability.
+//
+// The search itself is exhaustive branch-and-bound backtracking (still the true
+// shortest no-repeat chain, guaranteed), but it's *guided* by cheap unconstrained
+// BFS distances from each anchor: blind neighbor-order DFS is fine on a small
+// graph, but explodes combinatorially on a real graph with high-degree "hub"
+// clubs (Real Madrid, Man City, ...), since it can wander deep into an unrelated
+// part of the graph before finding the right direction. Precomputed BFS
+// distances let the search try the most promising ordering and the most
+// promising next node first, so pruning kicks in almost immediately in practice.
 
 export type GraphNode = { id: number; type: "PLAYER" | "CLUB" };
 export type GraphEdge = { playerId: number; clubId: number };
+
+const DEFAULT_NODE_BUDGET_PER_ORDERING = 300_000;
 
 function toNodeId(node: GraphNode): string {
   return `${node.type}:${node.id}`;
@@ -53,15 +64,47 @@ function permutations<T>(items: T[]): T[][] {
   return result;
 }
 
+// Plain single-source BFS over the whole graph, completely unconstrained by the
+// no-repeat rule. Used only as a heuristic/lower bound to guide the real search -
+// never returned as an answer on its own, since it may reuse nodes that a real
+// chain can't.
+function bfsDistancesFrom(adjacency: Map<string, Set<string>>, startId: string): Map<string, number> {
+  const distances = new Map<string, number>([[startId, 0]]);
+  const queue: string[] = [startId];
+  let head = 0;
+
+  while (head < queue.length) {
+    const current = queue[head];
+    head += 1;
+    const currentDistance = distances.get(current)!;
+
+    const neighbors = adjacency.get(current);
+    if (!neighbors) continue;
+
+    for (const neighbor of neighbors) {
+      if (distances.has(neighbor)) continue;
+      distances.set(neighbor, currentDistance + 1);
+      queue.push(neighbor);
+    }
+  }
+
+  return distances;
+}
+
 // Depth-first, branch-and-bound search for the shortest alternating no-repeat path
 // that visits `checkpoints` (player node ids, PLAYER type) in that exact order as a
 // subsequence of the path - other players/clubs may appear in between to bridge two
 // checkpoints that don't share a club directly. `bestKnownLength` (from earlier
 // orderings already tried) prunes any branch that can no longer beat it.
+// `distancesFromAnchor` (unconstrained BFS hop-counts from each anchor) is used only
+// to decide which neighbor to try first at each step - it never changes correctness,
+// only how quickly a good answer (and therefore aggressive pruning) is found.
 function searchOrdering(
   adjacency: Map<string, Set<string>>,
   checkpoints: string[],
   bestKnownLength: number,
+  distancesFromAnchor: Map<string, Map<string, number>>,
+  nodeBudget: number,
 ): string[] | null {
   const start = checkpoints[0];
   if (!adjacency.has(start)) return null;
@@ -70,6 +113,8 @@ function searchOrdering(
   const path: string[] = [start];
   let localBestLength = bestKnownLength;
   let localBest: string[] | null = null;
+  let nodesExplored = 0;
+  let budgetExceeded = false;
 
   function backtrack(current: string, nextCheckpointIndex: number): void {
     if (nextCheckpointIndex === checkpoints.length) {
@@ -86,8 +131,25 @@ function searchOrdering(
     const neighbors = adjacency.get(current);
     if (!neighbors) return;
 
-    for (const neighbor of neighbors) {
+    // Try the neighbor that's known (via unconstrained BFS) to be closest to the
+    // checkpoint we're currently heading toward first - the search converges to a
+    // good answer almost immediately in practice instead of wandering blindly.
+    const targetDistances = distancesFromAnchor.get(checkpoints[nextCheckpointIndex]);
+    const orderedNeighbors = Array.from(neighbors).sort((a, b) => {
+      const distanceA = targetDistances?.get(a) ?? Number.POSITIVE_INFINITY;
+      const distanceB = targetDistances?.get(b) ?? Number.POSITIVE_INFINITY;
+      return distanceA - distanceB;
+    });
+
+    for (const neighbor of orderedNeighbors) {
+      if (budgetExceeded) return;
       if (visited.has(neighbor)) continue;
+
+      nodesExplored += 1;
+      if (nodesExplored > nodeBudget) {
+        budgetExceeded = true;
+        return;
+      }
 
       visited.add(neighbor);
       path.push(neighbor);
@@ -101,10 +163,21 @@ function searchOrdering(
   }
 
   backtrack(start, 1);
+
+  if (budgetExceeded) {
+    console.warn(
+      `findShortestAnchorChain: gave up on one ordering after ${nodeBudget} node expansions without exhausting it; trying the next ordering.`,
+    );
+  }
+
   return localBest;
 }
 
-export function findShortestAnchorChain(anchorPlayerIds: number[], edges: GraphEdge[]): GraphNode[] | null {
+export function findShortestAnchorChain(
+  anchorPlayerIds: number[],
+  edges: GraphEdge[],
+  options?: { nodeBudgetPerOrdering?: number },
+): GraphNode[] | null {
   const uniqueAnchors = Array.from(new Set(anchorPlayerIds));
 
   if (uniqueAnchors.length !== anchorPlayerIds.length) {
@@ -116,11 +189,47 @@ export function findShortestAnchorChain(anchorPlayerIds: number[], edges: GraphE
   }
 
   const adjacency = buildAdjacency(edges);
+  const nodeBudget = options?.nodeBudgetPerOrdering ?? DEFAULT_NODE_BUDGET_PER_ORDERING;
+
+  const anchorNodeIds = uniqueAnchors.map((id) => toNodeId({ id, type: "PLAYER" }));
+  const distancesFromAnchor = new Map<string, Map<string, number>>();
+  for (const anchorNodeId of anchorNodeIds) {
+    distancesFromAnchor.set(anchorNodeId, bfsDistancesFrom(adjacency, anchorNodeId));
+  }
+
+  // If any two anchors are in different connected components, no ordering can ever
+  // work - fail fast instead of exhausting every permutation's backtracking first.
+  for (let i = 0; i < anchorNodeIds.length; i += 1) {
+    for (let j = i + 1; j < anchorNodeIds.length; j += 1) {
+      if (!distancesFromAnchor.get(anchorNodeIds[i])!.has(anchorNodeIds[j])) {
+        return null;
+      }
+    }
+  }
+
+  // Sum of unconstrained BFS hop-counts between consecutive checkpoints, +1 to
+  // convert edge-count to node-count, is a valid lower bound on that ordering's
+  // true no-repeat path length (the no-repeat rule can only force detours, never
+  // shortcuts). Trying the most promising ordering first means a near-optimal
+  // answer is usually found immediately, which then lets every worse-bounded
+  // ordering be skipped without any backtracking at all.
+  const orderings = permutations(uniqueAnchors).map((ordering) => {
+    const checkpoints = ordering.map((id) => toNodeId({ id, type: "PLAYER" }));
+    let lowerBound = 1;
+    for (let i = 0; i < checkpoints.length - 1; i += 1) {
+      lowerBound += distancesFromAnchor.get(checkpoints[i])!.get(checkpoints[i + 1])!;
+    }
+    return { checkpoints, lowerBound };
+  });
+  orderings.sort((a, b) => a.lowerBound - b.lowerBound);
+
   let best: string[] | null = null;
 
-  for (const ordering of permutations(uniqueAnchors)) {
-    const checkpoints = ordering.map((id) => toNodeId({ id, type: "PLAYER" }));
-    const result = searchOrdering(adjacency, checkpoints, best?.length ?? Infinity);
+  for (const { checkpoints, lowerBound } of orderings) {
+    const bestKnownLength = best?.length ?? Infinity;
+    if (lowerBound >= bestKnownLength) continue;
+
+    const result = searchOrdering(adjacency, checkpoints, bestKnownLength, distancesFromAnchor, nodeBudget);
 
     if (result && (!best || result.length < best.length)) {
       best = result;
