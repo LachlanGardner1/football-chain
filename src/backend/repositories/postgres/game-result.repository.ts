@@ -58,9 +58,15 @@ export class PgGameResultRepository implements GameResultRepository {
       );
 
       if (params.solved) {
+        // Only counts toward the streak if this is actually today's puzzle - solving
+        // an older, backfilled puzzle should never advance (or repair) the streak,
+        // matching how daily-puzzle games like Wordle handle archive play.
         await client.query(
-          `SELECT refresh_user_streak($1::uuid, CURRENT_DATE)`,
-          [params.userId],
+          `SELECT refresh_user_streak($1::uuid, CURRENT_DATE)
+           WHERE EXISTS (
+             SELECT 1 FROM daily_puzzles WHERE id = $2 AND puzzle_date = CURRENT_DATE
+           )`,
+          [params.userId, params.puzzleId],
         );
       }
 
@@ -83,13 +89,20 @@ export class PgGameResultRepository implements GameResultRepository {
       `SELECT
          COUNT(*) FILTER (WHERE gr.solved = TRUE) AS solved_count,
          MIN(gr.best_chain_length) FILTER (WHERE gr.best_chain_length IS NOT NULL) AS best_chain_length,
-         us.current_streak,
+         -- A streak is only still "live" if its last on-time solve was today or
+         -- yesterday; once a full day has been missed without playing, it reads as
+         -- broken here even though the stored row isn't reset until the next solve.
+         CASE
+           WHEN us.last_solved_date IS NULL THEN 0
+           WHEN us.last_solved_date >= CURRENT_DATE - INTERVAL '1 day' THEN us.current_streak
+           ELSE 0
+         END AS current_streak,
          us.max_streak
        FROM users u
        LEFT JOIN game_results gr ON gr.user_id = u.id
        LEFT JOIN user_streaks us ON us.user_id = u.id
        WHERE u.id = $1::uuid
-       GROUP BY us.current_streak, us.max_streak`,
+       GROUP BY us.current_streak, us.max_streak, us.last_solved_date`,
       [userId],
     );
 

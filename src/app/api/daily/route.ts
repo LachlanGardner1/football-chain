@@ -1,16 +1,20 @@
 import { NextResponse } from "next/server";
-import { ensureServicesReady, services } from "../../../backend/wiring/container";
+import { services } from "../../../backend/wiring/container";
+import { resolveDailyPuzzleDate } from "./date";
 
-function todayUtcDateIso(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
-export async function GET() {
-  await ensureServicesReady();
-  const puzzle = await services.dailyPuzzle.getTodayPublishedPuzzle(todayUtcDateIso());
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const requestedDate = searchParams.get("date");
+  const puzzleDate = resolveDailyPuzzleDate(requestedDate);
+  // An explicitly-requested date must match exactly, or the caller gets a clear
+  // "not found" instead of silently being served a different puzzle.
+  const puzzle = await services.dailyPuzzle.getTodayPublishedPuzzle(puzzleDate, { strict: requestedDate !== null });
 
   if (!puzzle) {
-    return NextResponse.json({ error: "No puzzle published yet." }, { status: 404 });
+    return NextResponse.json(
+      { error: requestedDate ? "No puzzle published for this date." : "No puzzle published yet." },
+      { status: 404 },
+    );
   }
 
   return NextResponse.json(puzzle, { status: 200 });
