@@ -7,6 +7,8 @@ This document tracks the intended development path for the Football Chain app an
 - Core validator logic is implemented and tested.
 - The browser puzzle UI supports interactive step-by-step play.
 - The app can load daily puzzle data and catalog data locally.
+- The puzzle now has a clear solved-state experience, replay/reset flow, and stronger validation feedback.
+- The next phase is gameplay and UI expansion before production hosting.
 - Basic documentation and context notes exist for future sessions.
 
 ## Next development steps
@@ -32,35 +34,41 @@ This document tracks the intended development path for the Football Chain app an
 - Consider a service for puzzle progression and scoring.
 - Keep validator behavior aligned with the current UI flow.
 
-### 5. Prepare for future game modes
+### 5. Add richer data sourcing
+- Source additional football data from a public football database or API.
+- Expand the catalog beyond the current local seed set.
+- Add import and refresh tooling for players, clubs, and relationships.
+- Keep data quality and attribution in mind for future gameplay modes.
+
+### 6. Prepare for future game modes
 - Add support for additional puzzle modes beyond the basic daily challenge.
 - Keep the validator and UI abstractions reusable.
 
-### 6. Prepare production infrastructure
+### 7. Prepare production infrastructure
 - Set up a production-grade hosting plan on AWS.
 - Decide on the deployment target, such as ECS, App Runner, Amplify, or EC2.
 - Provision managed PostgreSQL for production data.
 - Add environment variables and secrets management.
 - Configure domain registration, DNS, and HTTPS certificates.
 
-### 7. Add observability and reliability
+### 8. Add observability and reliability
 - Add structured logging and request tracing.
 - Set up monitoring and alerting for uptime, latency, and errors.
 - Add health checks for the web app and database.
 - Create backup and restore procedures for PostgreSQL.
 
-### 8. Harden security and compliance
+### 9. Harden security and compliance
 - Secure API routes and admin endpoints.
 - Add authentication and authorisation where needed.
 - Review data handling for privacy and user content.
 - Add rate limiting and abuse protection.
 
-### 9. Improve content and data operations
+### 10. Improve content and data operations
 - Add admin tooling for managing puzzles, players, clubs, and graph data.
 - Introduce a content workflow for publishing daily puzzles.
 - Add data validation and import tooling for future dataset updates.
 
-### 10. Scale for real users
+### 11. Scale for real users
 - Add caching where useful for catalog and daily puzzle reads.
 - Consider queueing or background jobs for heavy data operations.
 - Review performance under real traffic and optimise as needed.
@@ -74,8 +82,8 @@ This document tracks the intended development path for the Football Chain app an
 - [x] Validator logic implemented and tested
 - [x] Step-by-step UI flow implemented
 - [x] Context and documentation notes created
-- [ ] Win-state completion experience
-- [ ] Reset/replay flow
+- [x] Win-state completion experience
+- [x] Reset/replay flow
 - [ ] Gameplay polish
 - [ ] Future mode expansion
 - [ ] Production infrastructure on AWS
