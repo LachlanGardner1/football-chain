@@ -3,6 +3,7 @@ import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 const portsToCheck = [3000, 3001, 3002, 3003, 3004, 3005, 3006, 3007, 3008, 3009, 3010];
+const shouldClearCache = process.argv.includes('--clear-cache');
 
 function run(command) {
   return new Promise((resolve, reject) => {
@@ -21,11 +22,29 @@ function run(command) {
 }
 
 async function cleanup() {
+  if (shouldClearCache) {
+    try {
+      rmSync(join(process.cwd(), '.next'), { recursive: true, force: true });
+      rmSync(join(process.cwd(), 'node_modules', '.cache'), { recursive: true, force: true });
+      console.log('Cleared .next build cache');
+    } catch {
+      // Ignore cache cleanup errors.
+    }
+  }
+
   try {
-    rmSync(join(process.cwd(), '.next'), { recursive: true, force: true });
-    console.log('Cleared .next build cache');
+    const output = await run('tasklist /FI "IMAGENAME eq node.exe" /FO LIST');
+    const nodePids = [...output.matchAll(/PID:\s+(\d+)/g)].map((match) => Number(match[1]));
+
+    for (const pid of nodePids) {
+      const commandOutput = await run(`wmic process where processid=${pid} get CommandLine`);
+      if (commandOutput.includes('next dev') || commandOutput.includes('next-server')) {
+        await run(`taskkill /F /PID ${pid}`);
+        console.log(`Stopped stale Next dev process ${pid}`);
+      }
+    }
   } catch {
-    // Ignore cache cleanup errors.
+    // Ignore stale-process cleanup failures.
   }
 
   for (const port of portsToCheck) {
