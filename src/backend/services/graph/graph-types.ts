@@ -7,16 +7,10 @@ export interface GraphNode {
   type: NodeType;
 }
 
-export interface GraphBuildInput {
-  datasetVersionId: number;
-  edges: Array<{ playerId: number; clubId: number; playerName?: string; clubName?: string }>;
-}
-
 export interface GraphService {
-  rebuild(input: GraphBuildInput): void;
-  hasEdge(a: GraphNode, b: GraphNode): boolean;
-  getNodeName(node: GraphNode): string | null;
-  shortestPathPlayerToPlayer(startPlayerId: number, targetPlayerId: number): GraphNode[] | null;
+  hasEdge(a: GraphNode, b: GraphNode): Promise<boolean>;
+  getNodeName(node: GraphNode): Promise<string | null>;
+  shortestPathPlayerToPlayer(startPlayerId: number, targetPlayerId: number): Promise<GraphNode[] | null>;
 }
 
 export function toNodeId(node: GraphNode): NodeId {

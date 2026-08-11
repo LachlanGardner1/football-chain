@@ -1,15 +1,11 @@
 import { Pool } from "pg";
 
 function buildDatabaseUrlFromParts(): string | null {
-  const host = process.env.DB_HOST;
+  const host = process.env.DB_HOST ?? "localhost";
   const port = process.env.DB_PORT ?? "5432";
-  const user = process.env.DB_USER;
-  const password = process.env.DB_PASSWORD;
-  const name = process.env.DB_NAME;
-
-  if (!host || !user || !password || !name) {
-    return null;
-  }
+  const user = process.env.DB_USER ?? "football_app";
+  const password = process.env.DB_PASSWORD ?? "football_app";
+  const name = process.env.DB_NAME ?? "football_chain";
 
   return `postgres://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${host}:${port}/${name}`;
 }
@@ -29,7 +25,9 @@ export const pgPool =
   global.__footballChainPgPool ??
   new Pool({
     connectionString: databaseUrl,
-    max: 10,
+    // Kept small since a Lambda-based deployment means many concurrent small pools
+    // rather than one large one; bump this (or add RDS Proxy) if connection limits bite.
+    max: 3,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 5_000,
   });

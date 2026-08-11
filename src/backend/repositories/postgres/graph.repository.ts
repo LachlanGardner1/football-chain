@@ -36,4 +36,36 @@ export class PgGraphRepository implements GraphRepository {
       clubName: row.club_name,
     }));
   }
+
+  async hasPlayerClubEdge(datasetVersionId: number, playerId: number, clubId: number): Promise<boolean> {
+    const result = await pgPool.query(
+      `SELECT 1
+       FROM player_clubs
+       WHERE dataset_version_id = $1
+         AND player_id = $2
+         AND club_id = $3
+       LIMIT 1`,
+      [datasetVersionId, playerId, clubId],
+    );
+
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  async getPlayerName(playerId: number): Promise<string | null> {
+    const result = await pgPool.query<{ canonical_name: string }>(
+      `SELECT canonical_name FROM players WHERE id = $1`,
+      [playerId],
+    );
+
+    return result.rows[0]?.canonical_name ?? null;
+  }
+
+  async getClubName(clubId: number): Promise<string | null> {
+    const result = await pgPool.query<{ canonical_name: string }>(
+      `SELECT canonical_name FROM clubs WHERE id = $1`,
+      [clubId],
+    );
+
+    return result.rows[0]?.canonical_name ?? null;
+  }
 }
