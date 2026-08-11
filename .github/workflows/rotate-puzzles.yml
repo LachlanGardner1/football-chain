@@ -1,0 +1,63 @@
+name: Rotate daily puzzles
+
+# Daily trigger for the ops Lambda's "rotate-puzzles" action (scripts/puzzle-generation/
+# rotate-puzzles.ts): promotes today's puzzle from DRAFT to PUBLISHED and tops up the 7-day
+# buffer of future DRAFT puzzles. GitHub Actions is the sole scheduling source of truth here
+# (no EventBridge rule) - see infra/modules/ops_lambda for why, and
+# infra/TERRAFORM_CHECKLIST.md for the known ~10-15 min GitHub cron-delay caveat (fine for a
+# daily job with hours of slack either side).
+#
+# Requires the one-time github-oidc bootstrap already applied, and these repo variables set:
+# AWS_REGION, AWS_INVOKE_OPS_LAMBDA_ROLE_ARN (from that bootstrap's
+# `invoke_ops_lambda_role_arn` output), OPS_LAMBDA_FUNCTION_NAME (the deployed ops Lambda's
+# name, e.g. "football-chain-dev-ops" - deterministic from
+# infra/modules/ops_lambda/main.tf's `${project}-${environment}-ops` naming, so this workflow
+# doesn't need Terraform/state access at all - only lambda:InvokeFunction).
+
+on:
+  schedule:
+    - cron: "17 2 * * *" # ~daily; exact time isn't sensitive, see the cron-delay note above
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  rotate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_INVOKE_OPS_LAMBDA_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Invoke rotate-puzzles
+        run: |
+          set -euo pipefail
+
+          aws lambda invoke \
+            --function-name "${{ vars.OPS_LAMBDA_FUNCTION_NAME }}" \
+            --cli-binary-format raw-in-base64-out \
+            --payload '{"action":"rotate-puzzles"}' \
+            --query 'FunctionError' --output text \
+            response.json > function_error.txt
+
+          cat response.json
+          echo
+
+          FUNCTION_ERROR=$(cat function_error.txt)
+          if [ "$FUNCTION_ERROR" != "None" ]; then
+            echo "::error::ops Lambda invocation errored: $FUNCTION_ERROR"
+            exit 1
+          fi
+
+          if ! jq -e '.ok == true' response.json > /dev/null; then
+            echo "::error::rotate-puzzles action did not report ok:true"
+            exit 1
+          fi
+
+          SKIPPED=$(jq -r '.result.skippedDates | length' response.json)
+          if [ "$SKIPPED" != "0" ]; then
+            echo "::warning::rotate-puzzles skipped $SKIPPED date(s) this run - see result.skippedDates in the output above; it will retry them on the next run."
+          fi

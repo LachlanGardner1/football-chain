@@ -25,6 +25,3 @@ variable "db_deletion_protection" { type = bool }
 
 variable "log_retention_days" { type = number }
 variable "alarm_email" { type = string }
-
-variable "enable_daily_scheduler" { type = bool }
-variable "daily_schedule_expression" { type = string }

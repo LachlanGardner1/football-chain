@@ -36,24 +36,27 @@ module "rds" {
 }
 
 locals {
-  # Both modules below derive the same Lambda function name from project/environment,
-  # so this is computed here rather than threaded through a module output - that keeps
-  # observability (which needs the name for its alarms) from having to depend on
-  # lambda_app (which needs observability's log group to exist first). See the comment
-  # on the lambda_app module block below for the resulting dependency order.
-  lambda_function_name  = "${var.project}-${var.environment}-app"
-  open_next_output_root = "${path.root}/../../../.open-next"
+  # Both modules below derive the same Lambda function names from project/environment, so
+  # they're computed here rather than threaded through module outputs - that keeps
+  # observability (which needs the names for its alarms) from having to depend on lambda_app
+  # / ops_lambda (which each need observability's log groups to exist first). See the
+  # comments on those module blocks below for the resulting dependency order.
+  lambda_function_name     = "${var.project}-${var.environment}-app"
+  ops_lambda_function_name = "${var.project}-${var.environment}-ops"
+  open_next_output_root    = "${path.root}/../../../.open-next"
+  ops_lambda_build_path    = "${path.root}/../../../dist"
 }
 
 module "observability" {
   source = "../../modules/observability"
 
-  project              = var.project
-  environment          = var.environment
-  log_retention_days   = var.log_retention_days
-  alarm_email          = var.alarm_email
-  lambda_function_name = local.lambda_function_name
-  db_instance_id       = module.rds.db_instance_id
+  project                  = var.project
+  environment              = var.environment
+  log_retention_days       = var.log_retention_days
+  alarm_email              = var.alarm_email
+  lambda_function_name     = local.lambda_function_name
+  ops_lambda_function_name = local.ops_lambda_function_name
+  db_instance_id           = module.rds.db_instance_id
 }
 
 module "lambda_app" {
@@ -86,11 +89,20 @@ module "cloudfront" {
   open_next_assets_path      = "${local.open_next_output_root}/assets"
 }
 
-module "scheduler" {
-  source = "../../modules/scheduler"
+module "ops_lambda" {
+  source = "../../modules/ops_lambda"
 
-  project             = var.project
-  environment         = var.environment
-  schedule_expression = var.daily_schedule_expression
-  enabled             = var.enable_daily_scheduler
+  project                  = var.project
+  environment              = var.environment
+  ops_lambda_build_path    = local.ops_lambda_build_path
+  private_app_subnet_ids   = module.network.private_app_subnet_ids
+  lambda_security_group_id = module.security.lambda_security_group_id
+  db_secret_arn            = module.rds.secret_arn
+  db_endpoint              = module.rds.endpoint
+  db_name                  = var.db_name
+  log_group_name           = module.observability.ops_log_group_name
+
+  # Same reasoning as lambda_app's depends_on: the CloudWatch log group needs to exist
+  # (with retention set) before the function does.
+  depends_on = [module.observability]
 }

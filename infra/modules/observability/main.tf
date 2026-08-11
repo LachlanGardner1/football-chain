@@ -7,6 +7,11 @@ resource "aws_cloudwatch_log_group" "app" {
   retention_in_days = var.log_retention_days
 }
 
+resource "aws_cloudwatch_log_group" "ops" {
+  name              = "/aws/lambda/${local.name_prefix}-ops"
+  retention_in_days = var.log_retention_days
+}
+
 resource "aws_sns_topic" "alerts" {
   name = "${local.name_prefix}-alerts"
 }
@@ -52,6 +57,29 @@ resource "aws_cloudwatch_metric_alarm" "lambda_throttles" {
 
   dimensions = {
     FunctionName = var.lambda_function_name
+  }
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+}
+
+# Covers both the "migrate" and "rotate-puzzles" actions - either failing is worth knowing
+# about promptly (a failed migrate blocks a deploy from being usable; a failed rotate-puzzles
+# means the puzzle buffer silently stops growing).
+resource "aws_cloudwatch_metric_alarm" "ops_lambda_errors" {
+  alarm_name          = "${local.name_prefix}-ops-lambda-errors"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "Errors"
+  namespace           = "AWS/Lambda"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = 0
+  alarm_description   = "The ops Lambda (migrate / rotate-puzzles) raised at least one invocation error in the last 5 minutes."
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    FunctionName = var.ops_lambda_function_name
   }
 
   alarm_actions = [aws_sns_topic.alerts.arn]

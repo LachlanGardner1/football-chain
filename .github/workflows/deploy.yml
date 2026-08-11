@@ -1,0 +1,105 @@
+name: Deploy
+
+# Builds the app + ops Lambda, applies Terraform, then runs pending DB migrations via the ops
+# Lambda's "migrate" action - RDS is private (infra/TERRAFORM_CHECKLIST.md's "No public RDS"
+# gate), so that Lambda invocation is the only way anything outside the VPC can apply schema
+# changes. Auth to AWS is via GitHub OIDC (infra/environments/github-oidc) - no stored keys.
+#
+# Requires the one-time github-oidc bootstrap (see infra/TERRAFORM_CHECKLIST.md) to already be
+# applied, and these repo variables set (Settings -> Secrets and variables -> Actions ->
+# Variables): AWS_REGION, AWS_DEPLOY_ROLE_ARN (from that bootstrap's `deploy_role_arn` output).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        type: choice
+        options: [dev, prod]
+        default: dev
+
+concurrency:
+  group: deploy-${{ inputs.environment || 'dev' }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # A push to main always targets dev; prod is manual-dispatch-only. Pair the "prod"
+    # GitHub Environment (Settings -> Environments) with required reviewers if you want a
+    # manual approval gate on top of that - this workflow doesn't enforce one itself.
+    environment: ${{ inputs.environment || 'dev' }}
+    env:
+      TF_ENV_DIR: infra/environments/${{ inputs.environment || 'dev' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm test
+
+      - name: Build the Next.js app for Lambda (OpenNext)
+        run: npx open-next build
+
+      - name: Build the ops Lambda bundle (migrate / rotate-puzzles)
+        run: npm run build:ops-lambda
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.5"
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: terraform init
+        working-directory: ${{ env.TF_ENV_DIR }}
+        run: terraform init
+
+      - name: terraform plan
+        working-directory: ${{ env.TF_ENV_DIR }}
+        run: terraform plan -out=tfplan
+
+      - name: terraform apply
+        working-directory: ${{ env.TF_ENV_DIR }}
+        run: terraform apply -auto-approve tfplan
+
+      - name: Run pending DB migrations
+        working-directory: ${{ env.TF_ENV_DIR }}
+        run: |
+          set -euo pipefail
+          FUNCTION_NAME=$(terraform output -raw ops_lambda_function_name)
+          echo "Invoking $FUNCTION_NAME with action=migrate"
+
+          aws lambda invoke \
+            --function-name "$FUNCTION_NAME" \
+            --cli-binary-format raw-in-base64-out \
+            --payload '{"action":"migrate"}' \
+            --query 'FunctionError' --output text \
+            response.json > function_error.txt
+
+          cat response.json
+          echo
+
+          FUNCTION_ERROR=$(cat function_error.txt)
+          if [ "$FUNCTION_ERROR" != "None" ]; then
+            echo "::error::ops Lambda invocation errored: $FUNCTION_ERROR"
+            exit 1
+          fi
+
+          if ! jq -e '.ok == true' response.json > /dev/null; then
+            echo "::error::migrate action did not report ok:true"
+            exit 1
+          fi

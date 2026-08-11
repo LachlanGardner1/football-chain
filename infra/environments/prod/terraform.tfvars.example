@@ -24,6 +24,3 @@ db_deletion_protection   = true
 
 log_retention_days       = 30
 alarm_email               = "alerts@example.com"
-
-enable_daily_scheduler    = true
-daily_schedule_expression = "cron(0 0 * * ? *)"
