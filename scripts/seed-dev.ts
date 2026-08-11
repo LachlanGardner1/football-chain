@@ -1,5 +1,6 @@
 import pg from "pg";
 
+import { normalizeName } from "./normalize-name";
 import { findShortestAnchorChain, type GraphEdge } from "./puzzle-generation/solver";
 
 const { Pool } = pg;
@@ -11,10 +12,6 @@ if (!databaseUrl) {
 
 interface InsertIdRow {
   id: string;
-}
-
-function normalizeName(name: string): string {
-  return name.trim().toLowerCase();
 }
 
 async function run(): Promise<void> {

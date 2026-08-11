@@ -10,6 +10,7 @@
     "db:migrate": "tsx --tsconfig scripts/tsconfig.json scripts/migrate.ts",
     "db:seed": "tsx --tsconfig scripts/tsconfig.json scripts/seed-dev.ts",
     "db:reset-dev": "npm run db:migrate && npm run db:seed",
+    "db:import-transfermarkt": "tsx --tsconfig scripts/tsconfig.json scripts/data-import/import-transfermarkt.ts",
     "test:validation": "node --test --import tsx src/backend/services/game/chain-validation.service.test.ts",
     "test": "node --test --import tsx src/app/scoring.test.ts src/app/puzzle-suggestions.test.ts src/backend/repositories/postgres/daily-puzzle.repository.test.ts src/backend/services/game/chain-validation.service.test.ts src/backend/services/auth/session.service.test.ts scripts/puzzle-generation/solver.test.ts"
   },
@@ -25,6 +26,7 @@
     "@types/node": "^22.10.5",
     "@types/pg": "^8.11.10",
     "@types/react": "19.2.17",
+    "csv-parse": "^7.0.2",
     "tsx": "^4.19.1",
     "typescript": "^5.7.2"
   }

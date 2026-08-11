@@ -20,3 +20,6 @@ crash.log
 dist/
 coverage/
 tsconfig.tsbuildinfo
+
+# Cached downloaded datasets
+scripts/data-import/.cache/

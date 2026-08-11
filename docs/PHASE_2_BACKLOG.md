@@ -64,14 +64,16 @@ This backlog breaks the next phase of work into smaller, testable stories so pro
 ## Theme 4 — Data expansion
 
 ### Story 4.1 — Add a public football data source
-- [ ] Choose a public football data provider or API
-- [ ] Define the data schema we need for players, clubs, and transfers
-- [ ] Create an import script for the first batch of data
+- [x] Choose a public football data provider or API — [dcaribou/transfermarkt-datasets](https://github.com/dcaribou/transfermarkt-datasets), CC0-1.0
+- [x] Define the data schema we need for players, clubs, and transfers — mapped onto the existing `players`/`clubs`/`player_clubs` tables, no schema change needed
+- [x] Create an import script for the first batch of data — `scripts/data-import/import-transfermarkt.ts` (`npm run db:import-transfermarkt`)
 
 ### Story 4.2 — Expand the catalog from imported data
-- [ ] Import a larger player/club catalog
+- [x] Import a larger player/club catalog — 6,066 players / 774 clubs / ~23.8k edges, filtered to players with peak market value >= EUR 8M or >= 20 international caps
 - [ ] Add support for more puzzle generation options
-- [ ] Validate imported data for duplicates and broken links
+- [x] Validate imported data for duplicates and broken links — found and removed 3 duplicate club rows (`Ajax` / `AS Roma` / `Bayer Leverkusen` vs. the imported dataset's official names); all 5 previously dead-end clubs now have real edges
+
+**Known follow-up**: `findShortestAnchorChain` (`scripts/puzzle-generation/solver.ts`) is correct but doesn't scale to the full imported graph for anchor sets that are far apart / pass through high-degree "hub" clubs (e.g. Real Madrid, Man City) — a 3-anchor test with Haaland/De Bruyne/Salah ran for several minutes and grew to 1GB+ memory before being killed, while a trivial 2-anchor case (two players who shared a club directly) solved instantly. The unguided branch-and-bound DFS has no distance-based pruning, so it can blow up combinatorially at hub nodes. Whoever picks up real puzzle-generation automation (Theme 4's "more puzzle generation options", or a future rotation pipeline) will need a smarter approach - e.g. precomputing pairwise BFS shortest paths between anchors first to get a strong bound before falling back to backtracking, or restricting candidate anchor sets to reasonably "close" players.
 
 ## Theme 5 — Release readiness later
 
@@ -95,7 +97,7 @@ This backlog breaks the next phase of work into smaller, testable stories so pro
 - [ ] Story 3.1
 - [ ] Story 3.2
 - [ ] Story 3.3
-- [ ] Story 4.1
-- [ ] Story 4.2
+- [x] Story 4.1
+- [ ] Story 4.2 (data imported and validated; "more puzzle generation options" still open)
 - [ ] Story 5.1
 - [ ] Story 5.2
