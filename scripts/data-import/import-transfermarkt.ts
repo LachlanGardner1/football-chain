@@ -20,6 +20,15 @@ const MIN_HIGHEST_MARKET_VALUE_EUR = 8_000_000;
 const MIN_INTERNATIONAL_CAPS = 20;
 
 const SOURCE_NAME = "transfermarkt-datasets";
+// transfers.csv has zero rows for some real, well-known players (confirmed directly: Xabi
+// Alonso, now a manager rather than an active player, has none at all) - most likely because
+// this dataset prioritizes currently-rostered squads. player_valuations.csv covers a lot of
+// that gap (confirmed 85.8% of the players left with zero transfers-derived edges have at
+// least one valuation row, cross-checked against 6 real career histories including Xabi
+// Alonso, Iniesta, Hazard, Bale, Rooney, Xavi - all correct), so it's used as a fallback
+// specifically for players the primary transfers-derived pass didn't reach. Tagged with its
+// own source_name so these edges stay identifiable/auditable later.
+const VALUATION_FALLBACK_SOURCE_NAME = "transfermarkt-datasets-valuations";
 const BATCH_SIZE = 500;
 
 // Official transfermarkt names, not the old hand-seeded short names ("Ajax", "AS Roma",
@@ -27,6 +36,13 @@ const BATCH_SIZE = 500;
 // using the short names would make it look like the dead-end problem is still unfixed once
 // those short-named rows are merged away (db/migrations/007_merge_duplicate_clubs.sql).
 const KNOWN_DEAD_END_CLUBS = ["Borussia Dortmund", "Inter Milan", "Ajax Amsterdam", "Associazione Sportiva Roma", "Bayer 04 Leverkusen"];
+
+// player_valuations.csv sentinel current_club_name values that aren't real clubs, and
+// youth/reserve-team entries (confirmed patterns like "1.FC Köln U19",
+// "1.FC Kaiserslautern II") that aren't meaningful "which club did they play for" answers for
+// this game.
+const NON_CLUB_VALUATION_NAMES = new Set(["Retired", "Without Club", "Unknown", "Career break"]);
+const YOUTH_OR_RESERVE_TEAM_PATTERN = /\bu(1[4-9]|2[0-3])\b|\b(ii|iii)$/i;
 
 interface PlayerRow {
   player_id: string;
@@ -55,11 +71,34 @@ interface CompetitionRow {
   country_name?: string;
 }
 
+interface PlayerValuationRow {
+  player_id: string;
+  date: string;
+  current_club_name?: string;
+}
+
 interface DerivedEdge {
   playerTmId: string;
   clubTmId: string;
   startYear: number | null;
   endYear: number | null;
+}
+
+// Same shape as DerivedEdge but resolved by club *name* rather than a transfermarkt club id -
+// player_valuations.csv's own current_club_id column isn't trustworthy (confirmed directly:
+// Xabi Alonso's Liverpool rows and his Real Madrid rows both show current_club_id=27, while
+// current_club_name correctly varies), so this never carries a club id at all.
+interface ValuationDerivedEdge {
+  playerTmId: string;
+  clubName: string;
+  startYear: number;
+  endYear: number | null;
+}
+
+interface ReferencedClub {
+  name: string;
+  country: string | null;
+  tmId: string | null;
 }
 
 function chunk<T>(items: T[], size: number): T[][] {
@@ -91,6 +130,39 @@ async function downloadAndCacheCsv(table: string): Promise<string> {
 
 function parseCsv<T>(csv: string): T[] {
   return parse(csv, { columns: true, skip_empty_lines: true, relax_column_count: true }) as T[];
+}
+
+function isRealClubValuationName(name: string | undefined): name is string {
+  if (!name) return false;
+  if (NON_CLUB_VALUATION_NAMES.has(name)) return false;
+  if (YOUTH_OR_RESERVE_TEAM_PATTERN.test(name)) return false;
+  return true;
+}
+
+// Collapses a player's chronologically-sorted valuation rows into one edge per run of
+// consecutive rows sharing the same club - the same "the next entry's start becomes this
+// one's end" approximation the primary transfers-derived path already uses, just applied to
+// valuation snapshot dates instead of transfer dates.
+function deriveValuationEdgesForPlayer(playerTmId: string, rows: PlayerValuationRow[]): ValuationDerivedEdge[] {
+  const sorted = [...rows].sort((a, b) => a.date.localeCompare(b.date));
+
+  const runs: Array<{ clubName: string; startDate: string }> = [];
+  for (const row of sorted) {
+    const clubName = row.current_club_name!;
+    const currentRun = runs[runs.length - 1];
+    if (currentRun && currentRun.clubName === clubName) continue;
+    runs.push({ clubName, startDate: row.date });
+  }
+
+  return runs.map((run, index) => {
+    const next = runs[index + 1];
+    return {
+      playerTmId,
+      clubName: run.clubName,
+      startYear: Number(run.startDate.slice(0, 4)),
+      endYear: next ? Number(next.startDate.slice(0, 4)) : null,
+    };
+  });
 }
 
 async function main(): Promise<void> {
@@ -172,17 +244,68 @@ async function main(): Promise<void> {
     });
   }
 
-  const referencedClubTmIds = new Set(derivedEdges.map((edge) => edge.clubTmId));
+  // Fallback: players.csv/transfers.csv leave some real, well-known players with zero edges
+  // (see the VALUATION_FALLBACK_SOURCE_NAME comment above). Only players the primary pass
+  // didn't reach are looked up here, so there's no overlap/collision risk with derivedEdges.
+  const playersWithTransferEdges = new Set(derivedEdges.map((edge) => edge.playerTmId));
+  const fallbackPlayerIds = new Set(
+    selectedPlayers.filter((player) => !playersWithTransferEdges.has(player.player_id)).map((player) => player.player_id),
+  );
+
+  let valuationDerivedEdges: ValuationDerivedEdge[] = [];
+  if (fallbackPlayerIds.size > 0) {
+    const valuationsCsv = await downloadAndCacheCsv("player_valuations");
+    const allValuations = parseCsv<PlayerValuationRow>(valuationsCsv);
+
+    const valuationsByPlayer = new Map<string, PlayerValuationRow[]>();
+    for (const row of allValuations) {
+      if (!fallbackPlayerIds.has(row.player_id)) continue;
+      if (!isRealClubValuationName(row.current_club_name)) continue;
+      const list = valuationsByPlayer.get(row.player_id) ?? [];
+      list.push(row);
+      valuationsByPlayer.set(row.player_id, list);
+    }
+
+    for (const [playerTmId, rows] of valuationsByPlayer) {
+      valuationDerivedEdges.push(...deriveValuationEdgesForPlayer(playerTmId, rows));
+    }
+  }
+
+  const stillUnresolvedPlayerCount = fallbackPlayerIds.size - new Set(valuationDerivedEdges.map((edge) => edge.playerTmId)).size;
 
   console.log(
-    `Derived ${derivedEdges.length} player-club stints across ${referencedClubTmIds.size} clubs ` +
-      `from ${allTransfers.length} transfer rows (${skippedUnresolved} skipped as unresolved destinations).`,
+    `Derived ${derivedEdges.length} player-club stints from transfers.csv ` +
+      `(${skippedUnresolved} transfer rows skipped as unresolved destinations), plus ` +
+      `${valuationDerivedEdges.length} fallback stints from player_valuations.csv for ` +
+      `${fallbackPlayerIds.size - stillUnresolvedPlayerCount} of ${fallbackPlayerIds.size} players who had zero transfers-derived edges ` +
+      `(${stillUnresolvedPlayerCount} still have no derivable history in either source).`,
   );
+
+  // Merge both sources into one referenced-club list, resolved by normalized name throughout
+  // rather than by transfermarkt club id - valuation-derived entries never had a trustworthy
+  // id to begin with, and resolving everything the same way avoids needing two parallel
+  // lookup paths.
+  const referencedClubsByNormalizedName = new Map<string, ReferencedClub>();
+  for (const edge of derivedEdges) {
+    const info = clubByTmId.get(edge.clubTmId);
+    if (!info) continue;
+    const key = normalizeName(info.name);
+    if (!referencedClubsByNormalizedName.has(key)) {
+      referencedClubsByNormalizedName.set(key, { name: info.name, country: info.country, tmId: edge.clubTmId });
+    }
+  }
+  for (const edge of valuationDerivedEdges) {
+    const key = normalizeName(edge.clubName);
+    if (!referencedClubsByNormalizedName.has(key)) {
+      referencedClubsByNormalizedName.set(key, { name: edge.clubName, country: null, tmId: null });
+    }
+  }
+  const referencedClubs = Array.from(referencedClubsByNormalizedName.values());
 
   if (dryRun) {
     console.log(
-      `[dry-run] Would upsert up to ${selectedPlayers.length} players, ${referencedClubTmIds.size} clubs, ` +
-        `${derivedEdges.length} edges. Re-run without --dry-run to write to the database.`,
+      `[dry-run] Would upsert up to ${selectedPlayers.length} players, ${referencedClubs.length} clubs, ` +
+        `${derivedEdges.length + valuationDerivedEdges.length} edges. Re-run without --dry-run to write to the database.`,
     );
     return;
   }
@@ -266,9 +389,9 @@ async function main(): Promise<void> {
     }
     const playersInserted = playerDbIdByTmId.size;
 
-    // Clubs: same batch-insert-then-lookup pattern, scoped to clubs actually referenced
-    // by a derived edge (so nothing enters the table without at least one edge).
-    const referencedClubs = Array.from(referencedClubTmIds, (tmId) => ({ tmId, ...clubByTmId.get(tmId)! }));
+    // Clubs: same batch-insert-then-lookup pattern, scoped to clubs actually referenced by a
+    // derived edge from either source (so nothing enters the table without at least one
+    // edge).
     for (const batch of chunk(referencedClubs, BATCH_SIZE)) {
       const values: unknown[] = [];
       const placeholders = batch.map((club, index) => {
@@ -291,32 +414,34 @@ async function main(): Promise<void> {
       [clubNormalizedNames],
     );
     const clubDbIdByNormalizedName = new Map(clubIdRows.rows.map((row) => [row.normalized_name, Number(row.id)]));
-    const clubDbIdByTmId = new Map<string, number>();
-    for (const club of referencedClubs) {
-      const dbId = clubDbIdByNormalizedName.get(normalizeName(club.name));
-      if (dbId !== undefined) {
-        clubDbIdByTmId.set(club.tmId, dbId);
-      }
-    }
-    const clubsInserted = clubDbIdByTmId.size;
+    const clubsInserted = clubDbIdByNormalizedName.size;
 
-    // Edges
+    // Edges: resolve both sources through the same normalized-name club lookup, then insert
+    // as one combined batch.
+    const resolvedEdges: Array<{ playerDbId: number; clubDbId: number; startYear: number | null; endYear: number | null; sourceName: string }> = [];
+    for (const edge of derivedEdges) {
+      const playerDbId = playerDbIdByTmId.get(edge.playerTmId);
+      const clubInfo = clubByTmId.get(edge.clubTmId);
+      const clubDbId = clubInfo ? clubDbIdByNormalizedName.get(normalizeName(clubInfo.name)) : undefined;
+      if (playerDbId === undefined || clubDbId === undefined) continue;
+      resolvedEdges.push({ playerDbId, clubDbId, startYear: edge.startYear, endYear: edge.endYear, sourceName: SOURCE_NAME });
+    }
+    for (const edge of valuationDerivedEdges) {
+      const playerDbId = playerDbIdByTmId.get(edge.playerTmId);
+      const clubDbId = clubDbIdByNormalizedName.get(normalizeName(edge.clubName));
+      if (playerDbId === undefined || clubDbId === undefined) continue;
+      resolvedEdges.push({ playerDbId, clubDbId, startYear: edge.startYear, endYear: edge.endYear, sourceName: VALUATION_FALLBACK_SOURCE_NAME });
+    }
+
     let edgesInserted = 0;
-    for (const batch of chunk(derivedEdges, BATCH_SIZE)) {
+    for (const batch of chunk(resolvedEdges, BATCH_SIZE)) {
       const values: unknown[] = [];
       const placeholders: string[] = [];
-      let rowIndex = 0;
-      for (const edge of batch) {
-        const playerDbId = playerDbIdByTmId.get(edge.playerTmId);
-        const clubDbId = clubDbIdByTmId.get(edge.clubTmId);
-        if (playerDbId === undefined || clubDbId === undefined) continue;
-
-        const base = rowIndex * 7;
-        values.push(playerDbId, clubDbId, edge.startYear, edge.endYear, SOURCE_NAME, 1.0, datasetVersionId);
+      batch.forEach((edge, index) => {
+        const base = index * 7;
+        values.push(edge.playerDbId, edge.clubDbId, edge.startYear, edge.endYear, edge.sourceName, 1.0, datasetVersionId);
         placeholders.push(`($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7})`);
-        rowIndex++;
-      }
-      if (placeholders.length === 0) continue;
+      });
 
       const result = await client.query(
         `INSERT INTO player_clubs (player_id, club_id, start_year, end_year, source_name, confidence, dataset_version_id)
@@ -332,7 +457,7 @@ async function main(): Promise<void> {
     console.log(`\nImport complete.`);
     console.log(`Players: ${playersInserted} resolved (new + pre-existing) of ${selectedPlayers.length} selected.`);
     console.log(`Clubs:   ${clubsInserted} resolved (new + pre-existing) of ${referencedClubs.length} referenced.`);
-    console.log(`Edges:   ${edgesInserted} newly inserted of ${derivedEdges.length} derived.`);
+    console.log(`Edges:   ${edgesInserted} newly inserted of ${resolvedEdges.length} derived.`);
 
     console.log(`\nPreviously dead-end clubs:`);
     for (const name of KNOWN_DEAD_END_CLUBS) {
