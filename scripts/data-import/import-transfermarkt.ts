@@ -22,7 +22,11 @@ const MIN_INTERNATIONAL_CAPS = 20;
 const SOURCE_NAME = "transfermarkt-datasets";
 const BATCH_SIZE = 500;
 
-const KNOWN_DEAD_END_CLUBS = ["Borussia Dortmund", "Inter Milan", "Ajax", "AS Roma", "Bayer Leverkusen"];
+// Official transfermarkt names, not the old hand-seeded short names ("Ajax", "AS Roma",
+// "Bayer Leverkusen") - this list only drives the post-import diagnostic printout below, but
+// using the short names would make it look like the dead-end problem is still unfixed once
+// those short-named rows are merged away (db/migrations/007_merge_duplicate_clubs.sql).
+const KNOWN_DEAD_END_CLUBS = ["Borussia Dortmund", "Inter Milan", "Ajax Amsterdam", "Associazione Sportiva Roma", "Bayer 04 Leverkusen"];
 
 interface PlayerRow {
   player_id: string;
@@ -199,12 +203,31 @@ async function main(): Promise<void> {
     }
     const datasetVersionId = Number(versionResult.rows[0].id);
 
-    // Players: batch-insert, ON CONFLICT (normalized_name) DO NOTHING, then a single
-    // lookup query resolves every normalized name (new or pre-existing) to its id.
+    // Players: batch-insert. peak_market_value_eur/international_caps use DO UPDATE (not DO
+    // NOTHING like the rest of the row) so re-running the import backfills fame data onto
+    // already-existing rows too - including the original hand-seeded players, which match an
+    // import row by normalized name - not just newly-inserted ones. A single lookup query
+    // then resolves every normalized name (new or pre-existing) to its id.
     for (const batch of chunk(selectedPlayers, BATCH_SIZE)) {
+      // Two different transfermarkt player rows can normalize to the same name (genuine
+      // same-name players, or two spellings that now fold together after normalizeName's
+      // accent-stripping). Postgres allows that under ON CONFLICT DO NOTHING (all but the
+      // first are silently skipped) but errors under DO UPDATE ("cannot affect row a second
+      // time") if two rows in the *same* INSERT target the same conflict key. Deduping the
+      // batch first-seen-wins is enough - any name dropped here still resolves to the same
+      // players.id afterward via the normalized_name lookup below, since that's the row this
+      // insert actually wrote.
+      const seenNormalizedNames = new Set<string>();
+      const dedupedBatch = batch.filter((player) => {
+        const key = normalizeName(player.name);
+        if (seenNormalizedNames.has(key)) return false;
+        seenNormalizedNames.add(key);
+        return true;
+      });
+
       const values: unknown[] = [];
-      const placeholders = batch.map((player, index) => {
-        const base = index * 6;
+      const placeholders = dedupedBatch.map((player, index) => {
+        const base = index * 8;
         values.push(
           player.name,
           normalizeName(player.name),
@@ -212,14 +235,18 @@ async function main(): Promise<void> {
           player.country_of_citizenship || null,
           player.position || null,
           player.player_id,
+          player.highest_market_value_in_eur ? Number(player.highest_market_value_in_eur) : null,
+          player.international_caps ? Number(player.international_caps) : null,
         );
-        return `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6})`;
+        return `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5},$${base + 6},$${base + 7},$${base + 8})`;
       });
 
       await client.query(
-        `INSERT INTO players (canonical_name, normalized_name, dob, country, position, source_entity_id)
+        `INSERT INTO players (canonical_name, normalized_name, dob, country, position, source_entity_id, peak_market_value_eur, international_caps)
          VALUES ${placeholders.join(",")}
-         ON CONFLICT (normalized_name) DO NOTHING`,
+         ON CONFLICT (normalized_name) DO UPDATE SET
+           peak_market_value_eur = EXCLUDED.peak_market_value_eur,
+           international_caps = EXCLUDED.international_caps`,
         values,
       );
     }

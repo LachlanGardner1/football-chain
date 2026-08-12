@@ -14,7 +14,7 @@
     "puzzles:rotate": "tsx --tsconfig scripts/tsconfig.json scripts/puzzle-generation/rotate-puzzles.ts",
     "build:ops-lambda": "node scripts/build-ops-lambda.mjs",
     "test:validation": "node --test --import tsx src/backend/services/game/chain-validation.service.test.ts",
-    "test": "node --test --import tsx src/app/scoring.test.ts src/app/puzzle-suggestions.test.ts src/backend/repositories/postgres/daily-puzzle.repository.test.ts src/backend/services/game/chain-validation.service.test.ts src/backend/services/auth/session.service.test.ts scripts/puzzle-generation/solver.test.ts scripts/puzzle-generation/rotate-puzzles.test.ts"
+    "test": "node --test --import tsx src/app/scoring.test.ts src/app/puzzle-suggestions.test.ts src/backend/repositories/postgres/daily-puzzle.repository.test.ts src/backend/services/game/chain-validation.service.test.ts src/backend/services/auth/session.service.test.ts src/backend/services/hints/hint.service.test.ts scripts/puzzle-generation/solver.test.ts scripts/puzzle-generation/rotate-puzzles.test.ts"
   },
   "dependencies": {
     "@phosphor-icons/react": "^2.1.10",

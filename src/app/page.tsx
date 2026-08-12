@@ -8,6 +8,7 @@ import {
   Flag,
   Flame,
   Gauge,
+  Lightbulb,
   Moon,
   SoccerBall,
   Sun,
@@ -15,8 +16,8 @@ import {
   XCircle,
 } from '@phosphor-icons/react';
 
-import { getUsedEntryKeys, getVisibleCatalogEntries, nodeKey } from './puzzle-suggestions';
-import { calculatePuzzleScore, resolveProgressScore, type PuzzleScoreBreakdown } from './scoring';
+import { foldAccents, getUsedEntryKeys, getVisibleCatalogEntries, nodeKey } from './puzzle-suggestions';
+import { calculatePuzzleScore, HINT_PENALTY_POINTS, resolveProgressScore, type PuzzleScoreBreakdown } from './scoring';
 import { isTheme, THEME_STORAGE_KEY, type Theme } from './theme';
 
 type Puzzle = {
@@ -47,6 +48,25 @@ type ServerStats = {
 type AvailableDates = {
   dates: string[];
   today: string;
+};
+
+type HintResponse =
+  | { kind: 'ANCHOR_CLUB'; anchorPlayerId: number; anchorPlayerName: string; clubId: number; clubName: string; hintsUsed: number }
+  | {
+      kind: 'NEXT_STEP';
+      fromNodeId: number;
+      fromNodeType: 'PLAYER' | 'CLUB';
+      fromLabel: string;
+      nodeId: number;
+      nodeType: 'PLAYER' | 'CLUB';
+      label: string;
+      hintsUsed: number;
+    }
+  | { kind: 'NONE'; reason: string; hintsUsed: number };
+
+type HintStateResponse = {
+  hintsUsed: number;
+  revealedAnchorClubHints: Array<{ anchorPlayerId: number; clubId: number; clubName: string }>;
 };
 
 function sortMatches(a: CatalogEntry, b: CatalogEntry) {
@@ -100,6 +120,11 @@ export default function HomePage() {
   const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [availableDates, setAvailableDates] = useState<AvailableDates | null>(null);
   const [dateInputError, setDateInputError] = useState<string | null>(null);
+  const [hintsUsed, setHintsUsed] = useState(0);
+  const [revealedAnchorClubHints, setRevealedAnchorClubHints] = useState<Record<number, string>>({});
+  const [nextStepHint, setNextStepHint] = useState<{ fromLabel: string; label: string; nodeType: 'PLAYER' | 'CLUB' } | null>(null);
+  const [hintLoading, setHintLoading] = useState(false);
+  const [hintMessage, setHintMessage] = useState<string | null>(null);
   const validationRequestIdRef = useRef(0);
   const invalidSubmissionCountRef = useRef(0);
 
@@ -124,6 +149,37 @@ export default function HomePage() {
     fetch('/api/daily/dates')
       .then((res) => res.json())
       .then((data: AvailableDates) => setAvailableDates(data))
+      .catch(() => undefined);
+  }
+
+  // Hydrates already-revealed hints on load (e.g. after a refresh) without spending a new
+  // one - the anchor_club_hints table is the source of truth, this just mirrors it locally.
+  // Takes optimalLength directly (rather than reading puzzle state) because this runs from
+  // inside loadPuzzle's callback, before the just-set puzzle state has actually re-rendered -
+  // going through updateScore's `puzzle` closure here would silently no-op on a stale null.
+  function fetchHintState(puzzleId: number, optimalLength: number | undefined) {
+    fetch(`/api/hint?puzzleId=${puzzleId}`)
+      .then((res) => res.json())
+      .then((data: HintStateResponse) => {
+        setHintsUsed(data.hintsUsed);
+        const revealed: Record<number, string> = {};
+        for (const hint of data.revealedAnchorClubHints) {
+          revealed[hint.anchorPlayerId] = hint.clubName;
+        }
+        setRevealedAnchorClubHints(revealed);
+        // A fresh page load always starts with an empty confirmed chain, but hints spent in
+        // an earlier visit are still real - without this, the score display would
+        // misleadingly show 1000 until the next submission.
+        setScoreBreakdown(
+          calculatePuzzleScore({
+            chainLength: 0,
+            optimalLength: optimalLength ?? 1,
+            invalidSubmissions: 0,
+            hintsUsed: data.hintsUsed,
+            solved: false,
+          }),
+        );
+      })
       .catch(() => undefined);
   }
 
@@ -161,6 +217,13 @@ export default function HomePage() {
         setScoreBreakdown(null);
         setInvalidSubmissions(0);
         invalidSubmissionCountRef.current = 0;
+        setNextStepHint(null);
+        setHintMessage(null);
+        setHintsUsed(0);
+        setRevealedAnchorClubHints({});
+        if (puzzleData.puzzleId) {
+          fetchHintState(puzzleData.puzzleId, puzzleData.optimalLength);
+        }
         setLoading(false);
       })
       .catch(() => setError('Unable to load puzzle data.'));
@@ -203,13 +266,14 @@ export default function HomePage() {
     setStepValidationStates((current) => ({ ...current, [index]: null }));
   }
 
-  function updateScore(nextChainLength: number, solved: boolean, nextInvalidSubmissions: number) {
+  function updateScore(nextChainLength: number, solved: boolean, nextInvalidSubmissions: number, nextHintsUsed: number = hintsUsed) {
     if (!puzzle) return;
 
     const nextScore = calculatePuzzleScore({
       chainLength: nextChainLength,
       optimalLength: puzzle.optimalLength ?? 1,
       invalidSubmissions: nextInvalidSubmissions,
+      hintsUsed: nextHintsUsed,
       solved,
     });
 
@@ -217,10 +281,12 @@ export default function HomePage() {
       chainLength: nextChainLength,
       optimalLength: puzzle.optimalLength ?? 1,
       invalidSubmissions: nextInvalidSubmissions,
+      hintsUsed: nextHintsUsed,
       solved,
       score: nextScore.score,
       completionBonus: nextScore.completionBonus,
       invalidPenalty: nextScore.invalidPenalty,
+      hintPenalty: nextScore.hintPenalty,
     });
 
     setScoreBreakdown((currentBreakdown) => {
@@ -375,6 +441,49 @@ export default function HomePage() {
     setInvalidSubmissions(0);
     invalidSubmissionCountRef.current = 0;
     setShakeKey((value) => value + 1);
+    // hintsUsed/revealedAnchorClubHints are NOT cleared here - they're spent server-side
+    // against this puzzle regardless of a local chain reset. Only the next-step suggestion
+    // (tied to the now-cleared chain position) goes stale.
+    setNextStepHint(null);
+    setHintMessage(null);
+  }
+
+  async function requestHint() {
+    if (!puzzle || hintLoading) return;
+
+    setHintLoading(true);
+    setHintMessage(null);
+
+    const confirmedChain = steps
+      .filter((step, index) => step.id !== null && stepValidationStates[index] === 'valid')
+      .map((step) => ({ id: step.id as number, type: step.type }));
+
+    try {
+      const response = await fetch('/api/hint', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ puzzleId: puzzle.puzzleId, chain: confirmedChain }),
+      });
+
+      const data = (await response.json()) as HintResponse;
+      setHintsUsed(data.hintsUsed);
+
+      if (data.kind === 'ANCHOR_CLUB') {
+        setRevealedAnchorClubHints((current) => ({ ...current, [data.anchorPlayerId]: data.clubName }));
+        setNextStepHint(null);
+      } else if (data.kind === 'NEXT_STEP') {
+        setNextStepHint({ fromLabel: data.fromLabel, label: data.label, nodeType: data.nodeType });
+      } else {
+        setNextStepHint(null);
+        setHintMessage(data.reason);
+      }
+
+      updateScore(chainTrail.length, solved, invalidSubmissionCountRef.current, data.hintsUsed);
+    } catch (err) {
+      setHintMessage(err instanceof Error ? err.message : 'Unable to get a hint right now.');
+    } finally {
+      setHintLoading(false);
+    }
   }
 
   async function handleSubmit(event: React.FormEvent) {
@@ -522,9 +631,35 @@ export default function HomePage() {
                 {remainingAnchorPlayers.map((player) => (
                   <span key={player.id} className="callout-chip">
                     {player.name}
+                    {revealedAnchorClubHints[player.id] ? (
+                      <span className="callout-chip-hint"> — {revealedAnchorClubHints[player.id]}</span>
+                    ) : null}
                   </span>
                 ))}
               </div>
+            </div>
+          ) : null}
+
+          {!solved ? (
+            <div className="hint-row">
+              <button
+                type="button"
+                onClick={requestHint}
+                disabled={hintLoading || !puzzle}
+                className="btn btn-hint"
+              >
+                <Lightbulb size={15} weight="fill" />
+                {hintLoading ? 'Getting hint...' : 'Get a hint'}
+              </button>
+              {nextStepHint ? (
+                <span className="hint-text">
+                  From <strong>{nextStepHint.fromLabel}</strong>, try: <strong>{nextStepHint.label}</strong>
+                </span>
+              ) : hintMessage ? (
+                <span className="hint-text">{hintMessage}</span>
+              ) : (
+                <span className="hint-text">Costs {HINT_PENALTY_POINTS} points - reveals a club, then a link, one at a time.</span>
+              )}
             </div>
           ) : null}
 
@@ -549,7 +684,7 @@ export default function HomePage() {
               <div>
                 <div className="stat-label">Current score</div>
                 <div className="stat-value stat-value--mono">{scoreBreakdown?.score ?? 1000}</div>
-                <div className="stat-sub">invalid -{scoreBreakdown?.invalidPenalty ?? 0}</div>
+                <div className="stat-sub">invalid -{scoreBreakdown?.invalidPenalty ?? 0} · hints -{scoreBreakdown?.hintPenalty ?? 0}</div>
               </div>
             </div>
             <div className="stat-card">
@@ -635,7 +770,7 @@ export default function HomePage() {
                             setStepShowSuggestions((current) => ({ ...current, [index]: true }));
                             setHighlightedSuggestionIndex((current) => ({ ...current, [index]: 0 }));
                             setStepValidationStates((current) => ({ ...current, [index]: null }));
-                            const match = entries.find((entry) => entry.name.toLowerCase() === nextValue.trim().toLowerCase());
+                            const match = entries.find((entry) => foldAccents(entry.name.toLowerCase()) === foldAccents(nextValue.trim().toLowerCase()));
                             if (match) {
                               updateStep(index, { id: match.id, type: expectedType });
                             }
@@ -1130,6 +1265,36 @@ export default function HomePage() {
           font-weight: 600;
           font-size: 13px;
           border: 1px solid var(--border);
+        }
+
+        .callout-chip-hint {
+          color: var(--ink-muted);
+          font-weight: 500;
+        }
+
+        .hint-row {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          flex-wrap: wrap;
+          margin-bottom: 14px;
+        }
+
+        .hint-text {
+          color: var(--ink-muted);
+          font-size: 13px;
+        }
+
+        .btn-hint {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          background: var(--gold-soft);
+          color: var(--gold);
+        }
+
+        .btn-hint:hover:not(:disabled) {
+          background: var(--repeat-bg);
         }
 
         .helper-text {

@@ -8,6 +8,7 @@ import {
   generateCandidateChain,
   isAcceptableChainLength,
   pickRandomAnchors,
+  selectAnchorCandidatePool,
 } from './rotate-puzzles';
 import type { GraphEdge } from './solver';
 
@@ -121,6 +122,18 @@ test('generateCandidateChain falls back to the full candidate pool when exclusio
 
   assert.ok(result);
   assert.deepEqual(new Set(result!.anchorPlayerIds), new Set([1, 2, 3]));
+});
+
+test('selectAnchorCandidatePool uses the famous-restricted pool when it can cover the largest anchor count', () => {
+  const famous = [1, 2, 3, 4, 5, 6];
+  const full = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+  assert.deepEqual(selectAnchorCandidatePool(famous, full), famous);
+});
+
+test('selectAnchorCandidatePool falls back to the full pool when the famous pool is too small', () => {
+  const famous = [1, 2, 3];
+  const full = [1, 2, 3, 4, 5, 6, 7, 8];
+  assert.deepEqual(selectAnchorCandidatePool(famous, full), full);
 });
 
 // Deterministic stand-in for Math.random: cycles through a fixed sequence of [0, 1) values.

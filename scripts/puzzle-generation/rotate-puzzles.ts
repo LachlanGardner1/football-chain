@@ -40,6 +40,14 @@ export const GENERATION_SCREENING_NODE_BUDGET = 20_000;
 // anchor shares a club with the next one" every day. Tune freely.
 export const MIN_EXTRA_CHAIN_LENGTH = 2;
 export const MAX_CHAIN_LENGTH = 13;
+export const ANCHOR_COUNT_CHOICES = [3, 4, 5];
+// Deliberately stricter than the import's own 8M/20-cap inclusion bar (which only decides
+// whether a player is in the graph at all) - "graph-eligible" and "anchor-worthy" are
+// different bars. Connecting players in the middle of a chain still come from the full
+// graph; only the *named* anchors are restricted to this pool, since that's what actually
+// determines whether a puzzle feels fair vs. obscure. Tune freely.
+export const ANCHOR_MIN_MARKET_VALUE_EUR = 30_000_000;
+export const ANCHOR_MIN_CAPS = 40;
 
 export interface RotationResult {
   today: string;
@@ -93,8 +101,15 @@ export function isAcceptableChainLength(anchorCount: number, chainLength: number
 }
 
 export function chooseAnchorCount(rng: () => number = Math.random): number {
-  const choices = [3, 4, 5];
-  return choices[Math.floor(rng() * choices.length)];
+  return ANCHOR_COUNT_CHOICES[Math.floor(rng() * ANCHOR_COUNT_CHOICES.length)];
+}
+
+// Falls back to the full graph pool if the famous-restricted pool can't even cover the
+// largest possible anchor count, rather than failing every date outright. Pure so it's
+// directly unit-testable without a database.
+export function selectAnchorCandidatePool(famousCandidatePlayerIds: number[], fullCandidatePlayerIds: number[]): number[] {
+  const maxAnchorCount = Math.max(...ANCHOR_COUNT_CHOICES);
+  return famousCandidatePlayerIds.length >= maxAnchorCount ? famousCandidatePlayerIds : fullCandidatePlayerIds;
 }
 
 // Random sample without replacement. Throws if the pool is too small - callers are
@@ -177,6 +192,19 @@ async function loadPlayerClubEdges(client: PoolClient, datasetVersionId: number)
     [datasetVersionId],
   );
   return result.rows.map((row) => ({ playerId: Number(row.player_id), clubId: Number(row.club_id) }));
+}
+
+// Restricted pool for anchor sampling specifically - see ANCHOR_MIN_MARKET_VALUE_EUR/
+// ANCHOR_MIN_CAPS above for why this is a stricter bar than plain graph membership.
+async function loadFamousCandidatePlayerIds(client: PoolClient, datasetVersionId: number): Promise<number[]> {
+  const result = await client.query<{ id: string }>(
+    `SELECT DISTINCT p.id
+     FROM players p
+     JOIN player_clubs pc ON pc.player_id = p.id AND pc.dataset_version_id = $1
+     WHERE p.peak_market_value_eur >= $2 OR p.international_caps >= $3`,
+    [datasetVersionId, ANCHOR_MIN_MARKET_VALUE_EUR, ANCHOR_MIN_CAPS],
+  );
+  return result.rows.map((row) => Number(row.id));
 }
 
 async function loadRecentAnchorPlayerIds(client: PoolClient, sinceDateIso: string): Promise<Set<number>> {
@@ -286,11 +314,19 @@ export async function runDailyRotation(pool: Pool, options?: RunDailyRotationOpt
         dateDaysBefore(today, RECENCY_DEDUPE_DAYS),
       );
 
+      // Anchors are sampled from the famous-restricted pool so named players are
+      // recognizable; `edges` (what the solver pathfinds over) stays the full graph, so
+      // connecting players in the middle of the chain can still be anyone - that's
+      // deliberate. Falls back to the full graph pool if the famous pool somehow can't even
+      // cover the largest possible anchor count, rather than failing every date outright.
+      const famousCandidatePlayerIds = await loadFamousCandidatePlayerIds(client, datasetVersionId);
+      const anchorCandidatePlayerIds = selectAnchorCandidatePool(famousCandidatePlayerIds, candidatePlayerIds);
+
       for (const date of missingDates) {
         const anchorCount = chooseAnchorCount(rng);
         const candidate = generateCandidateChain({
           anchorCount,
-          candidatePlayerIds,
+          candidatePlayerIds: anchorCandidatePlayerIds,
           excludedPlayerIds,
           edges,
           rng,

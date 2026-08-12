@@ -137,4 +137,17 @@ export class PgDailyPuzzleRepository implements DailyPuzzleRepository {
       status: row.status,
     };
   }
+
+  async getAnchorPlayers(puzzleId: number): Promise<Array<{ id: number; name: string }>> {
+    const result = await pgPool.query<{ id: string; canonical_name: string }>(
+      `SELECT pl.id, pl.canonical_name
+       FROM daily_puzzle_players dpp
+       JOIN players pl ON pl.id = dpp.player_id
+       WHERE dpp.daily_puzzle_id = $1
+       ORDER BY pl.canonical_name`,
+      [puzzleId],
+    );
+
+    return result.rows.map((row) => ({ id: Number(row.id), name: row.canonical_name }));
+  }
 }
