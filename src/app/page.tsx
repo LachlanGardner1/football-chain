@@ -17,7 +17,13 @@ import {
 } from '@phosphor-icons/react';
 
 import { foldAccents, getUsedEntryKeys, getVisibleCatalogEntries, nodeKey } from './puzzle-suggestions';
-import { calculatePuzzleScore, HINT_PENALTY_POINTS, resolveProgressScore, type PuzzleScoreBreakdown } from './scoring';
+import {
+  ANCHOR_CLUB_HINT_PENALTY_POINTS,
+  calculatePuzzleScore,
+  NEXT_STEPS_HINT_PENALTY_POINTS,
+  resolveProgressScore,
+  type PuzzleScoreBreakdown,
+} from './scoring';
 import { isTheme, THEME_STORAGE_KEY, type Theme } from './theme';
 
 type Puzzle = {
@@ -50,23 +56,25 @@ type AvailableDates = {
   today: string;
 };
 
-type HintResponse =
-  | { kind: 'ANCHOR_CLUB'; anchorPlayerId: number; anchorPlayerName: string; clubId: number; clubName: string; hintsUsed: number }
+type RevealAnchorClubResponse =
+  | { kind: 'CLUB_REVEALED'; anchorPlayerId: number; clubId: number; clubName: string; hintPenalty: number }
+  | { kind: 'NO_MORE_CLUBS'; anchorPlayerId: number; hintPenalty: number };
+
+type RevealNextStepsResponse =
   | {
-      kind: 'NEXT_STEP';
+      kind: 'STEPS_REVEALED';
       fromNodeId: number;
       fromNodeType: 'PLAYER' | 'CLUB';
       fromLabel: string;
-      nodeId: number;
-      nodeType: 'PLAYER' | 'CLUB';
-      label: string;
-      hintsUsed: number;
+      steps: Array<{ id: number; type: 'PLAYER' | 'CLUB'; label: string }>;
+      hintPenalty: number;
     }
-  | { kind: 'NONE'; reason: string; hintsUsed: number };
+  | { kind: 'NONE'; reason: string; hintPenalty: number };
 
 type HintStateResponse = {
-  hintsUsed: number;
   revealedAnchorClubHints: Array<{ anchorPlayerId: number; clubId: number; clubName: string }>;
+  nextStepHintsUsed: number;
+  hintPenalty: number;
 };
 
 function sortMatches(a: CatalogEntry, b: CatalogEntry) {
@@ -120,11 +128,13 @@ export default function HomePage() {
   const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [availableDates, setAvailableDates] = useState<AvailableDates | null>(null);
   const [dateInputError, setDateInputError] = useState<string | null>(null);
-  const [hintsUsed, setHintsUsed] = useState(0);
-  const [revealedAnchorClubHints, setRevealedAnchorClubHints] = useState<Record<number, string>>({});
-  const [nextStepHint, setNextStepHint] = useState<{ fromLabel: string; label: string; nodeType: 'PLAYER' | 'CLUB' } | null>(null);
-  const [hintLoading, setHintLoading] = useState(false);
-  const [hintMessage, setHintMessage] = useState<string | null>(null);
+  const [hintPenalty, setHintPenalty] = useState(0);
+  const [revealedAnchorClubHints, setRevealedAnchorClubHints] = useState<Record<number, string[]>>({});
+  const [exhaustedAnchors, setExhaustedAnchors] = useState<Set<number>>(new Set());
+  const [anchorHintLoading, setAnchorHintLoading] = useState<Record<number, boolean>>({});
+  const [nextStepsReveal, setNextStepsReveal] = useState<{ fromLabel: string; steps: Array<{ label: string; type: 'PLAYER' | 'CLUB' }> } | null>(null);
+  const [nextStepsLoading, setNextStepsLoading] = useState(false);
+  const [nextStepsMessage, setNextStepsMessage] = useState<string | null>(null);
   const validationRequestIdRef = useRef(0);
   const invalidSubmissionCountRef = useRef(0);
 
@@ -161,12 +171,12 @@ export default function HomePage() {
     fetch(`/api/hint?puzzleId=${puzzleId}`)
       .then((res) => res.json())
       .then((data: HintStateResponse) => {
-        setHintsUsed(data.hintsUsed);
-        const revealed: Record<number, string> = {};
+        const revealed: Record<number, string[]> = {};
         for (const hint of data.revealedAnchorClubHints) {
-          revealed[hint.anchorPlayerId] = hint.clubName;
+          (revealed[hint.anchorPlayerId] ??= []).push(hint.clubName);
         }
         setRevealedAnchorClubHints(revealed);
+        setHintPenalty(data.hintPenalty);
         // A fresh page load always starts with an empty confirmed chain, but hints spent in
         // an earlier visit are still real - without this, the score display would
         // misleadingly show 1000 until the next submission.
@@ -175,7 +185,7 @@ export default function HomePage() {
             chainLength: 0,
             optimalLength: optimalLength ?? 1,
             invalidSubmissions: 0,
-            hintsUsed: data.hintsUsed,
+            hintPenalty: data.hintPenalty,
             solved: false,
           }),
         );
@@ -217,10 +227,12 @@ export default function HomePage() {
         setScoreBreakdown(null);
         setInvalidSubmissions(0);
         invalidSubmissionCountRef.current = 0;
-        setNextStepHint(null);
-        setHintMessage(null);
-        setHintsUsed(0);
+        setNextStepsReveal(null);
+        setNextStepsMessage(null);
+        setHintPenalty(0);
         setRevealedAnchorClubHints({});
+        setExhaustedAnchors(new Set());
+        setAnchorHintLoading({});
         if (puzzleData.puzzleId) {
           fetchHintState(puzzleData.puzzleId, puzzleData.optimalLength);
         }
@@ -236,12 +248,15 @@ export default function HomePage() {
   const remainingAnchorPlayers = useMemo(() => {
     if (!puzzle) return [];
 
+    // Only a *confirmed* (valid) step counts as visiting an anchor - a step that's merely
+    // filled in (typed/selected but not yet submitted, or submitted and rejected) must not
+    // remove that anchor from "Still needed".
     const playerIdsInChain = steps
-      .filter((step) => step.id !== null && step.type === 'PLAYER')
+      .filter((step, index) => step.id !== null && step.type === 'PLAYER' && stepValidationStates[index] === 'valid')
       .map((step) => step.id as number);
 
     return puzzle.anchorPlayers.filter((player) => !playerIdsInChain.includes(player.id));
-  }, [puzzle, steps]);
+  }, [puzzle, steps, stepValidationStates]);
 
   function appendNextStep() {
     setSteps((current) => {
@@ -266,14 +281,14 @@ export default function HomePage() {
     setStepValidationStates((current) => ({ ...current, [index]: null }));
   }
 
-  function updateScore(nextChainLength: number, solved: boolean, nextInvalidSubmissions: number, nextHintsUsed: number = hintsUsed) {
+  function updateScore(nextChainLength: number, solved: boolean, nextInvalidSubmissions: number, nextHintPenalty: number = hintPenalty) {
     if (!puzzle) return;
 
     const nextScore = calculatePuzzleScore({
       chainLength: nextChainLength,
       optimalLength: puzzle.optimalLength ?? 1,
       invalidSubmissions: nextInvalidSubmissions,
-      hintsUsed: nextHintsUsed,
+      hintPenalty: nextHintPenalty,
       solved,
     });
 
@@ -281,12 +296,11 @@ export default function HomePage() {
       chainLength: nextChainLength,
       optimalLength: puzzle.optimalLength ?? 1,
       invalidSubmissions: nextInvalidSubmissions,
-      hintsUsed: nextHintsUsed,
+      hintPenalty: nextHintPenalty,
       solved,
       score: nextScore.score,
       completionBonus: nextScore.completionBonus,
       invalidPenalty: nextScore.invalidPenalty,
-      hintPenalty: nextScore.hintPenalty,
     });
 
     setScoreBreakdown((currentBreakdown) => {
@@ -441,48 +455,84 @@ export default function HomePage() {
     setInvalidSubmissions(0);
     invalidSubmissionCountRef.current = 0;
     setShakeKey((value) => value + 1);
-    // hintsUsed/revealedAnchorClubHints are NOT cleared here - they're spent server-side
-    // against this puzzle regardless of a local chain reset. Only the next-step suggestion
-    // (tied to the now-cleared chain position) goes stale.
-    setNextStepHint(null);
-    setHintMessage(null);
+    // revealedAnchorClubHints/exhaustedAnchors/hintPenalty are NOT cleared here - they're
+    // spent server-side against this puzzle regardless of a local chain reset. Only the
+    // next-steps reveal (tied to the now-cleared chain position) goes stale.
+    setNextStepsReveal(null);
+    setNextStepsMessage(null);
   }
 
-  async function requestHint() {
-    if (!puzzle || hintLoading) return;
-
-    setHintLoading(true);
-    setHintMessage(null);
-
-    const confirmedChain = steps
+  function confirmedChainForHints() {
+    return steps
       .filter((step, index) => step.id !== null && stepValidationStates[index] === 'valid')
       .map((step) => ({ id: step.id as number, type: step.type }));
+  }
+
+  async function revealAnchorClub(anchorPlayerId: number) {
+    if (!puzzle || anchorHintLoading[anchorPlayerId]) return;
+
+    setAnchorHintLoading((current) => ({ ...current, [anchorPlayerId]: true }));
 
     try {
       const response = await fetch('/api/hint', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ puzzleId: puzzle.puzzleId, chain: confirmedChain }),
+        body: JSON.stringify({
+          action: 'reveal-anchor-club',
+          puzzleId: puzzle.puzzleId,
+          anchorPlayerId,
+          chain: confirmedChainForHints(),
+        }),
       });
 
-      const data = (await response.json()) as HintResponse;
-      setHintsUsed(data.hintsUsed);
+      const data = (await response.json()) as RevealAnchorClubResponse;
+      setHintPenalty(data.hintPenalty);
 
-      if (data.kind === 'ANCHOR_CLUB') {
-        setRevealedAnchorClubHints((current) => ({ ...current, [data.anchorPlayerId]: data.clubName }));
-        setNextStepHint(null);
-      } else if (data.kind === 'NEXT_STEP') {
-        setNextStepHint({ fromLabel: data.fromLabel, label: data.label, nodeType: data.nodeType });
+      if (data.kind === 'CLUB_REVEALED') {
+        setRevealedAnchorClubHints((current) => ({
+          ...current,
+          [anchorPlayerId]: [...(current[anchorPlayerId] ?? []), data.clubName],
+        }));
       } else {
-        setNextStepHint(null);
-        setHintMessage(data.reason);
+        setExhaustedAnchors((current) => new Set(current).add(anchorPlayerId));
       }
 
-      updateScore(chainTrail.length, solved, invalidSubmissionCountRef.current, data.hintsUsed);
-    } catch (err) {
-      setHintMessage(err instanceof Error ? err.message : 'Unable to get a hint right now.');
+      updateScore(chainTrail.length, solved, invalidSubmissionCountRef.current, data.hintPenalty);
+    } catch {
+      // Swallow - the button just stays enabled so the player can retry.
     } finally {
-      setHintLoading(false);
+      setAnchorHintLoading((current) => ({ ...current, [anchorPlayerId]: false }));
+    }
+  }
+
+  async function revealNextSteps() {
+    if (!puzzle || nextStepsLoading) return;
+
+    setNextStepsLoading(true);
+    setNextStepsMessage(null);
+
+    try {
+      const response = await fetch('/api/hint', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reveal-next-steps', puzzleId: puzzle.puzzleId, chain: confirmedChainForHints() }),
+      });
+
+      const data = (await response.json()) as RevealNextStepsResponse;
+      setHintPenalty(data.hintPenalty);
+
+      if (data.kind === 'STEPS_REVEALED') {
+        setNextStepsReveal({ fromLabel: data.fromLabel, steps: data.steps.map((step) => ({ label: step.label, type: step.type })) });
+      } else {
+        setNextStepsReveal(null);
+        setNextStepsMessage(data.reason);
+      }
+
+      updateScore(chainTrail.length, solved, invalidSubmissionCountRef.current, data.hintPenalty);
+    } catch (err) {
+      setNextStepsMessage(err instanceof Error ? err.message : 'Unable to get a hint right now.');
+    } finally {
+      setNextStepsLoading(false);
     }
   }
 
@@ -627,15 +677,32 @@ export default function HomePage() {
           {remainingAnchorPlayers.length > 0 ? (
             <div className="callout">
               <div className="callout-title">Still needed</div>
-              <div className="callout-chips">
-                {remainingAnchorPlayers.map((player) => (
-                  <span key={player.id} className="callout-chip">
-                    {player.name}
-                    {revealedAnchorClubHints[player.id] ? (
-                      <span className="callout-chip-hint"> — {revealedAnchorClubHints[player.id]}</span>
-                    ) : null}
-                  </span>
-                ))}
+              <div className="anchor-reveal-list">
+                {remainingAnchorPlayers.map((player) => {
+                  const revealedClubs = revealedAnchorClubHints[player.id] ?? [];
+                  const isExhausted = exhaustedAnchors.has(player.id);
+                  const isLoading = Boolean(anchorHintLoading[player.id]);
+
+                  return (
+                    <div key={player.id} className="anchor-reveal-row">
+                      <span className="callout-chip">
+                        {player.name}
+                        {revealedClubs.length > 0 ? (
+                          <span className="callout-chip-hint"> — {revealedClubs.join(', ')}</span>
+                        ) : null}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => revealAnchorClub(player.id)}
+                        disabled={isLoading || isExhausted}
+                        className="btn btn-hint btn-hint--small"
+                      >
+                        <Lightbulb size={13} weight="fill" />
+                        {isExhausted ? 'No more clubs' : isLoading ? 'Revealing...' : `Reveal club (-${ANCHOR_CLUB_HINT_PENALTY_POINTS})`}
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           ) : null}
@@ -644,21 +711,27 @@ export default function HomePage() {
             <div className="hint-row">
               <button
                 type="button"
-                onClick={requestHint}
-                disabled={hintLoading || !puzzle}
+                onClick={revealNextSteps}
+                disabled={nextStepsLoading || !puzzle}
                 className="btn btn-hint"
               >
                 <Lightbulb size={15} weight="fill" />
-                {hintLoading ? 'Getting hint...' : 'Get a hint'}
+                {nextStepsLoading ? 'Revealing...' : `Reveal next steps (-${NEXT_STEPS_HINT_PENALTY_POINTS})`}
               </button>
-              {nextStepHint ? (
+              {nextStepsReveal ? (
                 <span className="hint-text">
-                  From <strong>{nextStepHint.fromLabel}</strong>, try: <strong>{nextStepHint.label}</strong>
+                  From <strong>{nextStepsReveal.fromLabel}</strong>, try:{' '}
+                  {nextStepsReveal.steps.map((step, index) => (
+                    <strong key={index}>
+                      {index > 0 ? ' → ' : ''}
+                      {step.label}
+                    </strong>
+                  ))}
                 </span>
-              ) : hintMessage ? (
-                <span className="hint-text">{hintMessage}</span>
+              ) : nextStepsMessage ? (
+                <span className="hint-text">{nextStepsMessage}</span>
               ) : (
-                <span className="hint-text">Costs {HINT_PENALTY_POINTS} points - reveals a club, then a link, one at a time.</span>
+                <span className="hint-text">Reveals up to 2 links ahead toward the nearest anchor.</span>
               )}
             </div>
           ) : null}
@@ -1270,6 +1343,25 @@ export default function HomePage() {
         .callout-chip-hint {
           color: var(--ink-muted);
           font-weight: 500;
+        }
+
+        .anchor-reveal-list {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+
+        .anchor-reveal-row {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          flex-wrap: wrap;
+        }
+
+        .btn-hint--small {
+          padding: 5px 10px;
+          font-size: 12px;
+          gap: 4px;
         }
 
         .hint-row {

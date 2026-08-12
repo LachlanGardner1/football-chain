@@ -3,10 +3,9 @@ import { services } from "../../../backend/wiring/container";
 import { attachSessionCookie, resolveSession } from "../../../backend/services/auth/session.service";
 import type { ChainNodeInput } from "../../../backend/domain/types";
 
-interface HintBody {
-  puzzleId: number;
-  chain: ChainNodeInput[];
-}
+type HintBody =
+  | { action: "reveal-anchor-club"; puzzleId: number; anchorPlayerId: number; chain: ChainNodeInput[] }
+  | { action: "reveal-next-steps"; puzzleId: number; chain: ChainNodeInput[] };
 
 // Read-only: hydrates already-revealed hints on page load (e.g. after a refresh) without
 // spending a new one.
@@ -27,13 +26,23 @@ export async function POST(request: NextRequest) {
   const session = resolveSession(request);
 
   const anchorPlayers = await services.dailyPuzzle.getAnchorPlayers(body.puzzleId);
+  const chain = body.chain ?? [];
 
-  const result = await services.hints.getHint({
-    userId: session.userId,
-    puzzleId: body.puzzleId,
-    anchorPlayers,
-    chain: body.chain ?? [],
-  });
+  const result =
+    body.action === "reveal-anchor-club"
+      ? await services.hints.revealAnchorClub({
+          userId: session.userId,
+          puzzleId: body.puzzleId,
+          anchorPlayerId: body.anchorPlayerId,
+          anchorPlayers,
+          chain,
+        })
+      : await services.hints.revealNextSteps({
+          userId: session.userId,
+          puzzleId: body.puzzleId,
+          anchorPlayers,
+          chain,
+        });
 
   const response = NextResponse.json(result, { status: 200 });
   attachSessionCookie(response, session.userId);

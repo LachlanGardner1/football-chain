@@ -1,32 +1,41 @@
-import type { GraphRepository, HintRepository } from "../../domain/repositories";
+import type { GraphRepository, HintRepository, RevealedAnchorClubHint } from "../../domain/repositories";
 import type { ChainNodeInput } from "../../domain/types";
 import type { GraphNode, GraphService } from "../graph/graph-types";
 
-export type HintResult =
+// Mirrors src/app/scoring.ts's constants of the same name - kept as small independent
+// duplicates (see scripts/normalize-name.ts / src/app/puzzle-suggestions.ts for the same
+// pattern with foldAccents) since this is backend code and scoring.ts is frontend-only, with
+// no other reason to share a module for two numbers.
+export const ANCHOR_CLUB_HINT_PENALTY_POINTS = 50;
+export const NEXT_STEPS_HINT_PENALTY_POINTS = 150;
+
+export type RevealAnchorClubResult =
   | {
-      kind: "ANCHOR_CLUB";
+      kind: "CLUB_REVEALED";
       anchorPlayerId: number;
-      anchorPlayerName: string;
       clubId: number;
       clubName: string;
-      hintsUsed: number;
+      hintPenalty: number;
     }
+  | { kind: "NO_MORE_CLUBS"; anchorPlayerId: number; hintPenalty: number };
+
+export type RevealNextStepsResult =
   | {
-      kind: "NEXT_STEP";
+      kind: "STEPS_REVEALED";
       fromNodeId: number;
       fromNodeType: "PLAYER" | "CLUB";
       fromLabel: string;
-      nodeId: number;
-      nodeType: "PLAYER" | "CLUB";
-      label: string;
-      hintsUsed: number;
+      steps: Array<{ id: number; type: "PLAYER" | "CLUB"; label: string }>;
+      hintPenalty: number;
     }
-  | { kind: "NONE"; reason: string; hintsUsed: number };
+  | { kind: "NONE"; reason: string; hintPenalty: number };
 
-// Two-phase hint sequencing: (1) reveal each still-unvisited anchor's most-time-spent club,
-// one per hint, in a stable order - once every remaining anchor has been hinted this way,
-// (2) start revealing the actual next link in the chain, one step at a time, via a no-repeat-
-// aware shortest path toward the nearest unvisited anchor.
+// Two independent hint actions, each with its own point cost:
+// - revealAnchorClub: reveals one club for a *specific* still-unvisited anchor, longest-
+//   tenure first. Repeat presses for the same anchor keep revealing more of their clubs until
+//   none remain, at which point it's a free no-op (never charges for revealing nothing new).
+// - revealNextSteps: reveals up to 2 nodes ahead (a player+club or club+player pair) along a
+//   no-repeat-aware shortest path toward the nearest unvisited anchor.
 export class HintService {
   constructor(
     private readonly hintRepo: HintRepository,
@@ -37,80 +46,123 @@ export class HintService {
   // Read-only snapshot of hint state for a (user, puzzle) - used to hydrate the UI on page
   // load (e.g. after a refresh) without spending a new hint.
   async getRevealedState(userId: string, puzzleId: number) {
-    const [hintsUsed, revealedAnchorClubHints] = await Promise.all([
-      this.hintRepo.getHintsUsed(userId, puzzleId),
+    const [revealedAnchorClubHints, nextStepHintsUsed] = await Promise.all([
       this.hintRepo.getRevealedAnchorClubHints(userId, puzzleId),
+      this.hintRepo.getNextStepHintsUsed(userId, puzzleId),
     ]);
-    return { hintsUsed, revealedAnchorClubHints };
+
+    return {
+      revealedAnchorClubHints,
+      nextStepHintsUsed,
+      hintPenalty: this.computePenaltyFrom(revealedAnchorClubHints, nextStepHintsUsed),
+    };
   }
 
-  async getHint(params: {
+  async revealAnchorClub(params: {
     userId: string;
     puzzleId: number;
-    // Expected in the same stable order the UI already sorts anchors in (alphabetical) -
-    // that order is what determines which anchor gets hinted first.
+    anchorPlayerId: number;
     anchorPlayers: Array<{ id: number; name: string }>;
     chain: ChainNodeInput[];
-  }): Promise<HintResult> {
+  }): Promise<RevealAnchorClubResult> {
+    const { userId, puzzleId, anchorPlayerId, anchorPlayers, chain } = params;
+
+    const visitedPlayerIds = new Set(chain.filter((node) => node.type === "PLAYER").map((node) => node.id));
+    const isRevealableAnchor = anchorPlayers.some((anchor) => anchor.id === anchorPlayerId) && !visitedPlayerIds.has(anchorPlayerId);
+
+    if (!isRevealableAnchor) {
+      return { kind: "NO_MORE_CLUBS", anchorPlayerId, hintPenalty: await this.computeTotalHintPenalty(userId, puzzleId) };
+    }
+
+    const [datasetVersionId, revealed] = await Promise.all([
+      this.graphRepo.getActiveDatasetVersionId(),
+      this.hintRepo.getRevealedAnchorClubHints(userId, puzzleId),
+    ]);
+    const alreadyRevealedClubIds = revealed
+      .filter((hint) => hint.anchorPlayerId === anchorPlayerId)
+      .map((hint) => hint.clubId);
+
+    const club = await this.hintRepo.getNextUnrevealedClub(anchorPlayerId, datasetVersionId, alreadyRevealedClubIds);
+
+    if (!club) {
+      return { kind: "NO_MORE_CLUBS", anchorPlayerId, hintPenalty: await this.computeTotalHintPenalty(userId, puzzleId) };
+    }
+
+    await this.hintRepo.recordAnchorClubHint({ userId, puzzleId, anchorPlayerId, clubId: club.clubId });
+
+    return {
+      kind: "CLUB_REVEALED",
+      anchorPlayerId,
+      clubId: club.clubId,
+      clubName: club.clubName,
+      hintPenalty: await this.computeTotalHintPenalty(userId, puzzleId),
+    };
+  }
+
+  async revealNextSteps(params: {
+    userId: string;
+    puzzleId: number;
+    anchorPlayers: Array<{ id: number; name: string }>;
+    chain: ChainNodeInput[];
+  }): Promise<RevealNextStepsResult> {
     const { userId, puzzleId, anchorPlayers, chain } = params;
 
     const visitedPlayerIds = new Set(chain.filter((node) => node.type === "PLAYER").map((node) => node.id));
     const unvisitedAnchors = anchorPlayers.filter((anchor) => !visitedPlayerIds.has(anchor.id));
 
     if (unvisitedAnchors.length === 0) {
-      const hintsUsed = await this.hintRepo.incrementHintsUsed(userId, puzzleId);
-      return { kind: "NONE", reason: "All anchors are already visited.", hintsUsed };
+      return {
+        kind: "NONE",
+        reason: "All anchors are already visited.",
+        hintPenalty: await this.computeTotalHintPenalty(userId, puzzleId),
+      };
     }
 
-    const revealed = await this.hintRepo.getRevealedAnchorClubHints(userId, puzzleId);
-    const revealedAnchorIds = new Set(revealed.map((hint) => hint.anchorPlayerId));
-    const nextUnhintedAnchor = unvisitedAnchors.find((anchor) => !revealedAnchorIds.has(anchor.id));
+    const { fromNode, path } = await this.findPathToNearestUnvisitedAnchor(unvisitedAnchors, chain);
 
-    if (nextUnhintedAnchor) {
-      const datasetVersionId = await this.graphRepo.getActiveDatasetVersionId();
-      const club = await this.hintRepo.getMostTimeAtClub(nextUnhintedAnchor.id, datasetVersionId);
-
-      if (club) {
-        // incrementHintsUsed runs first because it's the one that ensures a `users` row
-        // exists (a hint can be the very first thing a brand-new anonymous session does) -
-        // recordAnchorClubHint has a foreign key to users and would fail otherwise.
-        const hintsUsed = await this.hintRepo.incrementHintsUsed(userId, puzzleId);
-        await this.hintRepo.recordAnchorClubHint({
-          userId,
-          puzzleId,
-          anchorPlayerId: nextUnhintedAnchor.id,
-          clubId: club.clubId,
-        });
-
-        return {
-          kind: "ANCHOR_CLUB",
-          anchorPlayerId: nextUnhintedAnchor.id,
-          anchorPlayerName: nextUnhintedAnchor.name,
-          clubId: club.clubId,
-          clubName: club.clubName,
-          hintsUsed,
-        };
-      }
-      // Every real anchor has at least one edge by construction, so this shouldn't happen -
-      // fall through to the next-step phase rather than getting stuck.
+    if (!fromNode || !path || path.length < 2) {
+      return {
+        kind: "NONE",
+        reason: "No further hint is available right now.",
+        hintPenalty: await this.computeTotalHintPenalty(userId, puzzleId),
+      };
     }
 
-    return this.getNextStepHint(userId, puzzleId, unvisitedAnchors, chain);
+    // Up to 2 nodes ahead - a full player+club or club+player pair where the path allows it,
+    // fewer only if the target anchor is reached in a single hop.
+    const revealedNodes = path.slice(1, 3);
+    await this.hintRepo.incrementNextStepHints(userId, puzzleId);
+
+    const [fromLabel, ...stepLabels] = await Promise.all([
+      this.graph.getNodeName(fromNode),
+      ...revealedNodes.map((node) => this.graph.getNodeName(node)),
+    ]);
+
+    return {
+      kind: "STEPS_REVEALED",
+      fromNodeId: fromNode.id,
+      fromNodeType: fromNode.type,
+      fromLabel: fromLabel ?? describeNode(fromNode),
+      steps: revealedNodes.map((node, index) => ({
+        id: node.id,
+        type: node.type,
+        label: stepLabels[index] ?? describeNode(node),
+      })),
+      hintPenalty: await this.computeTotalHintPenalty(userId, puzzleId),
+    };
   }
 
-  private async getNextStepHint(
-    userId: string,
-    puzzleId: number,
+  private async findPathToNearestUnvisitedAnchor(
     unvisitedAnchors: Array<{ id: number; name: string }>,
     chain: ChainNodeInput[],
-  ): Promise<HintResult> {
+  ): Promise<{ fromNode: GraphNode | null; path: GraphNode[] | null }> {
     const excluded: GraphNode[] = chain.map((node) => ({ id: node.id, type: node.type }));
     const lastNode = chain[chain.length - 1];
 
-    let fromNode: GraphNode | null = lastNode ? { id: lastNode.id, type: lastNode.type } : null;
-    let path: GraphNode[] | null = null;
+    if (lastNode) {
+      const fromNode: GraphNode = { id: lastNode.id, type: lastNode.type };
+      let path: GraphNode[] | null = null;
 
-    if (fromNode) {
       // Try every remaining unvisited anchor, keep whichever is nearest.
       for (const anchor of unvisitedAnchors) {
         const candidatePath = await this.graph.shortestPathAvoiding(fromNode, anchor.id, excluded);
@@ -118,53 +170,52 @@ export class HintService {
           path = candidatePath;
         }
       }
-    } else if (unvisitedAnchors.length >= 2) {
-      // No confirmed steps yet, but every anchor's club has already been hinted. Fall back to
-      // the closest pair of unvisited anchors and suggest starting from one of them.
-      let bestPath: GraphNode[] | null = null;
-      let bestFromId: number | null = null;
 
-      for (let i = 0; i < unvisitedAnchors.length; i += 1) {
-        for (let j = i + 1; j < unvisitedAnchors.length; j += 1) {
-          const candidatePath = await this.graph.shortestPathAvoiding(
-            { id: unvisitedAnchors[i].id, type: "PLAYER" },
-            unvisitedAnchors[j].id,
-            [],
-          );
-          if (candidatePath && (!bestPath || candidatePath.length < bestPath.length)) {
-            bestPath = candidatePath;
-            bestFromId = unvisitedAnchors[i].id;
-          }
+      return { fromNode, path };
+    }
+
+    if (unvisitedAnchors.length < 2) {
+      return { fromNode: null, path: null };
+    }
+
+    // No confirmed steps yet. Fall back to the closest pair of unvisited anchors and suggest
+    // starting from one of them.
+    let bestPath: GraphNode[] | null = null;
+    let bestFromId: number | null = null;
+
+    for (let i = 0; i < unvisitedAnchors.length; i += 1) {
+      for (let j = i + 1; j < unvisitedAnchors.length; j += 1) {
+        const candidatePath = await this.graph.shortestPathAvoiding(
+          { id: unvisitedAnchors[i].id, type: "PLAYER" },
+          unvisitedAnchors[j].id,
+          [],
+        );
+        if (candidatePath && (!bestPath || candidatePath.length < bestPath.length)) {
+          bestPath = candidatePath;
+          bestFromId = unvisitedAnchors[i].id;
         }
       }
-
-      if (bestPath && bestFromId !== null) {
-        fromNode = { id: bestFromId, type: "PLAYER" };
-        path = bestPath;
-      }
     }
-
-    const hintsUsed = await this.hintRepo.incrementHintsUsed(userId, puzzleId);
-
-    if (!fromNode || !path || path.length < 2) {
-      return { kind: "NONE", reason: "No further hint is available right now.", hintsUsed };
-    }
-
-    const nextNode = path[1];
-    const [fromLabel, label] = await Promise.all([
-      this.graph.getNodeName(fromNode),
-      this.graph.getNodeName(nextNode),
-    ]);
 
     return {
-      kind: "NEXT_STEP",
-      fromNodeId: fromNode.id,
-      fromNodeType: fromNode.type,
-      fromLabel: fromLabel ?? `${fromNode.type === "PLAYER" ? "Player" : "Club"} ${fromNode.id}`,
-      nodeId: nextNode.id,
-      nodeType: nextNode.type,
-      label: label ?? `${nextNode.type === "PLAYER" ? "Player" : "Club"} ${nextNode.id}`,
-      hintsUsed,
+      fromNode: bestFromId !== null ? { id: bestFromId, type: "PLAYER" } : null,
+      path: bestPath,
     };
   }
+
+  private async computeTotalHintPenalty(userId: string, puzzleId: number): Promise<number> {
+    const [revealed, nextStepHintsUsed] = await Promise.all([
+      this.hintRepo.getRevealedAnchorClubHints(userId, puzzleId),
+      this.hintRepo.getNextStepHintsUsed(userId, puzzleId),
+    ]);
+    return this.computePenaltyFrom(revealed, nextStepHintsUsed);
+  }
+
+  private computePenaltyFrom(revealed: RevealedAnchorClubHint[], nextStepHintsUsed: number): number {
+    return revealed.length * ANCHOR_CLUB_HINT_PENALTY_POINTS + nextStepHintsUsed * NEXT_STEPS_HINT_PENALTY_POINTS;
+  }
+}
+
+function describeNode(node: GraphNode): string {
+  return `${node.type === "PLAYER" ? "Player" : "Club"} ${node.id}`;
 }

@@ -40,14 +40,24 @@ export const GENERATION_SCREENING_NODE_BUDGET = 20_000;
 // anchor shares a club with the next one" every day. Tune freely.
 export const MIN_EXTRA_CHAIN_LENGTH = 2;
 export const MAX_CHAIN_LENGTH = 13;
-export const ANCHOR_COUNT_CHOICES = [3, 4, 5];
+export const ANCHOR_COUNT_CHOICES = [3, 4];
 // Deliberately stricter than the import's own 8M/20-cap inclusion bar (which only decides
 // whether a player is in the graph at all) - "graph-eligible" and "anchor-worthy" are
 // different bars. Connecting players in the middle of a chain still come from the full
 // graph; only the *named* anchors are restricted to this pool, since that's what actually
-// determines whether a puzzle feels fair vs. obscure. Tune freely.
-export const ANCHOR_MIN_MARKET_VALUE_EUR = 30_000_000;
-export const ANCHOR_MIN_CAPS = 40;
+// determines whether a puzzle feels fair vs. obscure. Tune freely - as of writing this
+// leaves a ~550-player pool (checked directly against the live catalog).
+//
+// Caps is no longer an alternate qualifying path (originally OR'd in at 40, then raised to
+// 80) - it turned out to be a structurally weak global-fame proxy no matter how high the bar
+// went, since caps accumulate with career *length*, not fame: a long-serving international
+// from a lower-profile footballing setup can rack up 60-100+ caps while staying fairly
+// unknown outside their region (two real examples hit during testing: a 67-cap/EUR800k
+// player, then even after raising the bar to 80, a 107-cap/EUR750k one). Market value alone
+// tracks actual transfer-market demand, which is a far more reliable fame signal - and
+// dropping caps barely shrinks the pool (547 players at this threshold either way), so it
+// wasn't buying meaningful variety in exchange for the noise.
+export const ANCHOR_MIN_MARKET_VALUE_EUR = 40_000_000;
 
 export interface RotationResult {
   today: string;
@@ -177,7 +187,10 @@ export function generateCandidateChain(options: GenerateCandidateOptions): Gener
   return fallback;
 }
 
-async function loadActiveDatasetVersionId(client: PoolClient): Promise<number> {
+// Exported for reuse by scripts/puzzle-generation/regenerate-today.ts - regular rotation
+// never needs these outside runDailyRotation, but the one-off "reroll today for local
+// testing" script does.
+export async function loadActiveDatasetVersionId(client: PoolClient): Promise<number> {
   const result = await client.query<{ id: number }>(
     `SELECT id FROM data_versions WHERE is_active = TRUE ORDER BY imported_at DESC LIMIT 1`,
   );
@@ -186,7 +199,7 @@ async function loadActiveDatasetVersionId(client: PoolClient): Promise<number> {
   return row.id;
 }
 
-async function loadPlayerClubEdges(client: PoolClient, datasetVersionId: number): Promise<GraphEdge[]> {
+export async function loadPlayerClubEdges(client: PoolClient, datasetVersionId: number): Promise<GraphEdge[]> {
   const result = await client.query<{ player_id: string; club_id: string }>(
     `SELECT player_id, club_id FROM player_clubs WHERE dataset_version_id = $1`,
     [datasetVersionId],
@@ -194,20 +207,20 @@ async function loadPlayerClubEdges(client: PoolClient, datasetVersionId: number)
   return result.rows.map((row) => ({ playerId: Number(row.player_id), clubId: Number(row.club_id) }));
 }
 
-// Restricted pool for anchor sampling specifically - see ANCHOR_MIN_MARKET_VALUE_EUR/
-// ANCHOR_MIN_CAPS above for why this is a stricter bar than plain graph membership.
-async function loadFamousCandidatePlayerIds(client: PoolClient, datasetVersionId: number): Promise<number[]> {
+// Restricted pool for anchor sampling specifically - see ANCHOR_MIN_MARKET_VALUE_EUR above
+// for why this is a stricter bar than plain graph membership.
+export async function loadFamousCandidatePlayerIds(client: PoolClient, datasetVersionId: number): Promise<number[]> {
   const result = await client.query<{ id: string }>(
     `SELECT DISTINCT p.id
      FROM players p
      JOIN player_clubs pc ON pc.player_id = p.id AND pc.dataset_version_id = $1
-     WHERE p.peak_market_value_eur >= $2 OR p.international_caps >= $3`,
-    [datasetVersionId, ANCHOR_MIN_MARKET_VALUE_EUR, ANCHOR_MIN_CAPS],
+     WHERE p.peak_market_value_eur >= $2`,
+    [datasetVersionId, ANCHOR_MIN_MARKET_VALUE_EUR],
   );
   return result.rows.map((row) => Number(row.id));
 }
 
-async function loadRecentAnchorPlayerIds(client: PoolClient, sinceDateIso: string): Promise<Set<number>> {
+export async function loadRecentAnchorPlayerIds(client: PoolClient, sinceDateIso: string): Promise<Set<number>> {
   const result = await client.query<{ player_id: string }>(
     `SELECT DISTINCT dpp.player_id
      FROM daily_puzzle_players dpp

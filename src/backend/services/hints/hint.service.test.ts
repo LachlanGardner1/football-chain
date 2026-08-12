@@ -7,32 +7,39 @@ import { HintService } from './hint.service';
 
 class StubHintRepository implements HintRepository {
   public recordedHints: Array<{ anchorPlayerId: number; clubId: number }> = [];
-  public hintsUsedCount = 0;
+  public nextStepHintsUsedCount = 0;
 
   constructor(
-    private revealed: RevealedAnchorClubHint[],
-    private clubByPlayer: Record<number, { clubId: number; clubName: string }> = {},
+    private revealed: RevealedAnchorClubHint[] = [],
+    private clubsByPlayer: Record<number, Array<{ clubId: number; clubName: string }>> = {},
   ) {}
 
   async getRevealedAnchorClubHints(): Promise<RevealedAnchorClubHint[]> {
     return this.revealed;
   }
 
-  async getMostTimeAtClub(playerId: number): Promise<{ clubId: number; clubName: string } | null> {
-    return this.clubByPlayer[playerId] ?? null;
+  async getNextUnrevealedClub(
+    playerId: number,
+    _datasetVersionId: number,
+    excludeClubIds: number[],
+  ): Promise<{ clubId: number; clubName: string } | null> {
+    const clubs = this.clubsByPlayer[playerId] ?? [];
+    return clubs.find((club) => !excludeClubIds.includes(club.clubId)) ?? null;
   }
 
   async recordAnchorClubHint(params: { anchorPlayerId: number; clubId: number }): Promise<void> {
+    const club = (this.clubsByPlayer[params.anchorPlayerId] ?? []).find((c) => c.clubId === params.clubId);
     this.recordedHints.push({ anchorPlayerId: params.anchorPlayerId, clubId: params.clubId });
+    this.revealed.push({ anchorPlayerId: params.anchorPlayerId, clubId: params.clubId, clubName: club?.clubName ?? 'Club' });
   }
 
-  async incrementHintsUsed(): Promise<number> {
-    this.hintsUsedCount += 1;
-    return this.hintsUsedCount;
+  async incrementNextStepHints(): Promise<number> {
+    this.nextStepHintsUsedCount += 1;
+    return this.nextStepHintsUsedCount;
   }
 
-  async getHintsUsed(): Promise<number> {
-    return this.hintsUsedCount;
+  async getNextStepHintsUsed(): Promise<number> {
+    return this.nextStepHintsUsedCount;
   }
 }
 
@@ -81,94 +88,131 @@ class StubGraphRepository implements GraphRepository {
   }
 }
 
-test('reveals the first unvisited anchor\'s most-time club when none have been hinted yet', async () => {
-  const hintRepo = new StubHintRepository([], { 1: { clubId: 100, clubName: 'Club A' } });
-  const graph = new StubGraphService({});
-  const service = new HintService(hintRepo, graph, new StubGraphRepository());
+const anchorPlayers = [
+  { id: 1, name: 'Alice' },
+  { id: 2, name: 'Bob' },
+];
 
-  const result = await service.getHint({
-    userId: 'u1',
-    puzzleId: 1,
-    anchorPlayers: [{ id: 1, name: 'Alice' }, { id: 2, name: 'Bob' }],
-    chain: [],
-  });
+// --- revealAnchorClub -------------------------------------------------------------------
 
-  assert.equal(result.kind, 'ANCHOR_CLUB');
-  assert.deepEqual(result, {
-    kind: 'ANCHOR_CLUB',
-    anchorPlayerId: 1,
-    anchorPlayerName: 'Alice',
-    clubId: 100,
-    clubName: 'Club A',
-    hintsUsed: 1,
-  });
+test('revealAnchorClub reveals the longest-tenure club first and costs 50', async () => {
+  const hintRepo = new StubHintRepository([], { 1: [{ clubId: 100, clubName: 'Club A' }, { clubId: 101, clubName: 'Club B' }] });
+  const service = new HintService(hintRepo, new StubGraphService({}), new StubGraphRepository());
+
+  const result = await service.revealAnchorClub({ userId: 'u1', puzzleId: 1, anchorPlayerId: 1, anchorPlayers, chain: [] });
+
+  assert.deepEqual(result, { kind: 'CLUB_REVEALED', anchorPlayerId: 1, clubId: 100, clubName: 'Club A', hintPenalty: 50 });
   assert.deepEqual(hintRepo.recordedHints, [{ anchorPlayerId: 1, clubId: 100 }]);
 });
 
-test('skips anchors that already have a revealed hint, moving to the next unvisited one', async () => {
-  const hintRepo = new StubHintRepository(
-    [{ anchorPlayerId: 1, clubId: 100, clubName: 'Club A' }],
-    { 2: { clubId: 200, clubName: 'Club B' } },
-  );
-  const graph = new StubGraphService({});
-  const service = new HintService(hintRepo, graph, new StubGraphRepository());
+test('revealAnchorClub keeps revealing more clubs for the same anchor on repeat presses', async () => {
+  const hintRepo = new StubHintRepository([], { 1: [{ clubId: 100, clubName: 'Club A' }, { clubId: 101, clubName: 'Club B' }] });
+  const service = new HintService(hintRepo, new StubGraphService({}), new StubGraphRepository());
 
-  const result = await service.getHint({
-    userId: 'u1',
-    puzzleId: 1,
-    anchorPlayers: [{ id: 1, name: 'Alice' }, { id: 2, name: 'Bob' }],
-    chain: [],
-  });
+  const first = await service.revealAnchorClub({ userId: 'u1', puzzleId: 1, anchorPlayerId: 1, anchorPlayers, chain: [] });
+  const second = await service.revealAnchorClub({ userId: 'u1', puzzleId: 1, anchorPlayerId: 1, anchorPlayers, chain: [] });
 
-  assert.equal(result.kind, 'ANCHOR_CLUB');
-  assert.equal((result as { anchorPlayerId: number }).anchorPlayerId, 2);
+  assert.equal(first.kind, 'CLUB_REVEALED');
+  assert.equal(second.kind, 'CLUB_REVEALED');
+  if (second.kind === 'CLUB_REVEALED') {
+    assert.equal(second.clubId, 101);
+    assert.equal(second.hintPenalty, 100);
+  }
 });
 
-test('does not hint an anchor that is already visited in the chain', async () => {
-  const hintRepo = new StubHintRepository([], { 2: { clubId: 200, clubName: 'Club B' } });
-  const graph = new StubGraphService({});
-  const service = new HintService(hintRepo, graph, new StubGraphRepository());
+test('revealAnchorClub reports NO_MORE_CLUBS without charging once every club is revealed', async () => {
+  const hintRepo = new StubHintRepository([], { 1: [{ clubId: 100, clubName: 'Club A' }] });
+  const service = new HintService(hintRepo, new StubGraphService({}), new StubGraphRepository());
 
-  const result = await service.getHint({
+  await service.revealAnchorClub({ userId: 'u1', puzzleId: 1, anchorPlayerId: 1, anchorPlayers, chain: [] });
+  const result = await service.revealAnchorClub({ userId: 'u1', puzzleId: 1, anchorPlayerId: 1, anchorPlayers, chain: [] });
+
+  assert.deepEqual(result, { kind: 'NO_MORE_CLUBS', anchorPlayerId: 1, hintPenalty: 50 });
+});
+
+test('revealAnchorClub is a free no-op for an anchor that is already visited', async () => {
+  const hintRepo = new StubHintRepository([], { 1: [{ clubId: 100, clubName: 'Club A' }] });
+  const service = new HintService(hintRepo, new StubGraphService({}), new StubGraphRepository());
+
+  const result = await service.revealAnchorClub({
     userId: 'u1',
     puzzleId: 1,
-    anchorPlayers: [{ id: 1, name: 'Alice' }, { id: 2, name: 'Bob' }],
+    anchorPlayerId: 1,
+    anchorPlayers,
     chain: [{ id: 1, type: 'PLAYER' }],
   });
 
-  assert.equal(result.kind, 'ANCHOR_CLUB');
-  assert.equal((result as { anchorPlayerId: number }).anchorPlayerId, 2);
+  assert.deepEqual(result, { kind: 'NO_MORE_CLUBS', anchorPlayerId: 1, hintPenalty: 0 });
+  assert.deepEqual(hintRepo.recordedHints, []);
 });
 
-test('moves to a next-step reveal once every unvisited anchor already has a club hint', async () => {
-  const hintRepo = new StubHintRepository([
-    { anchorPlayerId: 1, clubId: 100, clubName: 'Club A' },
-    { anchorPlayerId: 2, clubId: 200, clubName: 'Club B' },
-  ]);
+test('revealAnchorClub is a free no-op for a player id that is not an anchor of this puzzle', async () => {
+  const hintRepo = new StubHintRepository([], { 999: [{ clubId: 100, clubName: 'Club A' }] });
+  const service = new HintService(hintRepo, new StubGraphService({}), new StubGraphRepository());
+
+  const result = await service.revealAnchorClub({ userId: 'u1', puzzleId: 1, anchorPlayerId: 999, anchorPlayers, chain: [] });
+
+  assert.deepEqual(result, { kind: 'NO_MORE_CLUBS', anchorPlayerId: 999, hintPenalty: 0 });
+  assert.deepEqual(hintRepo.recordedHints, []);
+});
+
+// --- revealNextSteps ---------------------------------------------------------------------
+
+test('revealNextSteps reveals up to 2 nodes ahead and costs 150', async () => {
+  const hintRepo = new StubHintRepository();
   const path: GraphNode[] = [
     { id: 1, type: 'PLAYER' },
     { id: 999, type: 'CLUB' },
+    { id: 998, type: 'PLAYER' },
     { id: 2, type: 'PLAYER' },
   ];
   const graph = new StubGraphService({ 2: path });
   const service = new HintService(hintRepo, graph, new StubGraphRepository());
 
-  const result = await service.getHint({
+  const result = await service.revealNextSteps({
     userId: 'u1',
     puzzleId: 1,
-    anchorPlayers: [{ id: 1, name: 'Alice' }, { id: 2, name: 'Bob' }],
-    chain: [],
+    anchorPlayers,
+    chain: [{ id: 1, type: 'PLAYER' }],
   });
 
-  assert.equal(result.kind, 'NEXT_STEP');
-  if (result.kind === 'NEXT_STEP') {
-    assert.equal(result.nodeId, 999);
-    assert.equal(result.nodeType, 'CLUB');
+  assert.equal(result.kind, 'STEPS_REVEALED');
+  if (result.kind === 'STEPS_REVEALED') {
+    assert.equal(result.hintPenalty, 150);
+    assert.deepEqual(
+      result.steps.map((step) => step.id),
+      [999, 998],
+    );
   }
 });
 
-test('excludes every already-used player/club from the next-step path search', async () => {
-  const hintRepo = new StubHintRepository([{ anchorPlayerId: 2, clubId: 200, clubName: 'Club B' }]);
+test('revealNextSteps reveals only 1 node when the anchor is a single hop away', async () => {
+  const hintRepo = new StubHintRepository();
+  const path: GraphNode[] = [
+    { id: 1, type: 'PLAYER' },
+    { id: 2, type: 'PLAYER' },
+  ];
+  const graph = new StubGraphService({ 2: path });
+  const service = new HintService(hintRepo, graph, new StubGraphRepository());
+
+  const result = await service.revealNextSteps({
+    userId: 'u1',
+    puzzleId: 1,
+    anchorPlayers,
+    chain: [{ id: 1, type: 'PLAYER' }],
+  });
+
+  assert.equal(result.kind, 'STEPS_REVEALED');
+  if (result.kind === 'STEPS_REVEALED') {
+    assert.deepEqual(
+      result.steps.map((step) => step.id),
+      [2],
+    );
+  }
+});
+
+test('revealNextSteps excludes every already-used player/club from the path search', async () => {
+  const hintRepo = new StubHintRepository();
   const path: GraphNode[] = [
     { id: 50, type: 'CLUB' },
     { id: 77, type: 'PLAYER' },
@@ -182,25 +226,36 @@ test('excludes every already-used player/club from the next-step path search', a
     { id: 50, type: 'CLUB' },
   ];
 
-  const result = await service.getHint({
-    userId: 'u1',
-    puzzleId: 1,
-    anchorPlayers: [{ id: 1, name: 'Alice' }, { id: 2, name: 'Bob' }],
-    chain,
-  });
+  await service.revealNextSteps({ userId: 'u1', puzzleId: 1, anchorPlayers, chain });
 
-  assert.equal(result.kind, 'NEXT_STEP');
   assert.equal(graph.shortestPathAvoidingCalls.length, 1);
   assert.deepEqual(graph.shortestPathAvoidingCalls[0].excluded, chain);
   assert.deepEqual(graph.shortestPathAvoidingCalls[0].from, { id: 50, type: 'CLUB' });
 });
 
-test('returns NONE once every anchor has been visited', async () => {
-  const hintRepo = new StubHintRepository([]);
-  const graph = new StubGraphService({});
+test('revealNextSteps falls back to the closest anchor pair when the chain is empty', async () => {
+  const hintRepo = new StubHintRepository();
+  const path: GraphNode[] = [
+    { id: 1, type: 'PLAYER' },
+    { id: 999, type: 'CLUB' },
+    { id: 2, type: 'PLAYER' },
+  ];
+  const graph = new StubGraphService({ 2: path });
   const service = new HintService(hintRepo, graph, new StubGraphRepository());
 
-  const result = await service.getHint({
+  const result = await service.revealNextSteps({ userId: 'u1', puzzleId: 1, anchorPlayers, chain: [] });
+
+  assert.equal(result.kind, 'STEPS_REVEALED');
+  if (result.kind === 'STEPS_REVEALED') {
+    assert.equal(result.fromNodeId, 1);
+  }
+});
+
+test('revealNextSteps returns NONE once every anchor has been visited', async () => {
+  const hintRepo = new StubHintRepository();
+  const service = new HintService(hintRepo, new StubGraphService({}), new StubGraphRepository());
+
+  const result = await service.revealNextSteps({
     userId: 'u1',
     puzzleId: 1,
     anchorPlayers: [{ id: 1, name: 'Alice' }],

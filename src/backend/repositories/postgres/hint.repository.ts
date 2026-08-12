@@ -1,3 +1,5 @@
+import type { PoolClient } from "pg";
+
 import type { HintRepository, RevealedAnchorClubHint } from "../../domain/repositories";
 import { pgPool } from "./db";
 
@@ -18,19 +20,25 @@ export class PgHintRepository implements HintRepository {
     }));
   }
 
-  // "Most time spent" = longest (end_year - start_year) span, treating an open-ended/current
-  // spell (end_year IS NULL) as running through the current year. start_year is never null
-  // in the imported data, so no further fallback is needed. Ties broken by club id for
-  // determinism (repeat hint requests for the same player return the same club).
-  async getMostTimeAtClub(playerId: number, datasetVersionId: number): Promise<{ clubId: number; clubName: string } | null> {
+  // Longest-tenure-first ("most time spent" = longest end_year - start_year span, treating an
+  // open-ended/current spell as running through the current year - start_year is never null
+  // in the imported data, so no further fallback is needed), excluding clubs already revealed
+  // for this anchor. Ties broken by club id for determinism.
+  async getNextUnrevealedClub(
+    playerId: number,
+    datasetVersionId: number,
+    excludeClubIds: number[],
+  ): Promise<{ clubId: number; clubName: string } | null> {
     const result = await pgPool.query<{ id: string; canonical_name: string }>(
       `SELECT c.id, c.canonical_name
        FROM player_clubs pc
        JOIN clubs c ON c.id = pc.club_id
-       WHERE pc.player_id = $1 AND pc.dataset_version_id = $2
+       WHERE pc.player_id = $1
+         AND pc.dataset_version_id = $2
+         AND c.id <> ALL($3::bigint[])
        ORDER BY (COALESCE(pc.end_year, EXTRACT(YEAR FROM CURRENT_DATE)::INT) - pc.start_year) DESC, c.id ASC
        LIMIT 1`,
-      [playerId, datasetVersionId],
+      [playerId, datasetVersionId, excludeClubIds],
     );
 
     const row = result.rows[0];
@@ -45,49 +53,26 @@ export class PgHintRepository implements HintRepository {
     anchorPlayerId: number;
     clubId: number;
   }): Promise<void> {
-    await pgPool.query(
-      `INSERT INTO anchor_club_hints (user_id, puzzle_id, anchor_player_id, club_id)
-       VALUES ($1::uuid, $2, $3, $4)
-       ON CONFLICT (user_id, puzzle_id, anchor_player_id) DO NOTHING`,
-      [params.userId, params.puzzleId, params.anchorPlayerId, params.clubId],
-    );
-  }
-
-  async getHintsUsed(userId: string, puzzleId: number): Promise<number> {
-    const result = await pgPool.query<{ hints_used: number }>(
-      `SELECT hints_used FROM game_results WHERE user_id = $1::uuid AND puzzle_id = $2`,
-      [userId, puzzleId],
-    );
-    return result.rows[0]?.hints_used ?? 0;
-  }
-
-  async incrementHintsUsed(userId: string, puzzleId: number): Promise<number> {
     const client = await pgPool.connect();
 
     try {
       await client.query("BEGIN");
+      await ensureUserAndGameResults(client, params.userId, params.puzzleId);
 
-      // Mirrors PgGameResultRepository.upsertAttempt's users-then-game_results upsert
-      // pattern, since a hint can be requested before /api/complete ever runs.
       await client.query(
-        `INSERT INTO users (id, username)
-         VALUES ($1::uuid, $2)
-         ON CONFLICT (id) DO NOTHING`,
-        [userId, `user-${userId.slice(0, 8)}`],
+        `INSERT INTO anchor_club_hints (user_id, puzzle_id, anchor_player_id, club_id)
+         VALUES ($1::uuid, $2, $3, $4)
+         ON CONFLICT (user_id, puzzle_id, anchor_player_id, club_id) DO NOTHING`,
+        [params.userId, params.puzzleId, params.anchorPlayerId, params.clubId],
       );
 
-      const result = await client.query<{ hints_used: number }>(
-        `INSERT INTO game_results (user_id, puzzle_id, attempts, hints_used, solved)
-         VALUES ($1::uuid, $2, 0, 1, FALSE)
-         ON CONFLICT (user_id, puzzle_id) DO UPDATE SET
-           hints_used = game_results.hints_used + 1,
-           updated_at = NOW()
-         RETURNING hints_used`,
-        [userId, puzzleId],
+      await client.query(
+        `UPDATE game_results SET hints_used = hints_used + 1, updated_at = NOW()
+         WHERE user_id = $1::uuid AND puzzle_id = $2`,
+        [params.userId, params.puzzleId],
       );
 
       await client.query("COMMIT");
-      return result.rows[0].hints_used;
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -95,4 +80,56 @@ export class PgHintRepository implements HintRepository {
       client.release();
     }
   }
+
+  async incrementNextStepHints(userId: string, puzzleId: number): Promise<number> {
+    const client = await pgPool.connect();
+
+    try {
+      await client.query("BEGIN");
+      await ensureUserAndGameResults(client, userId, puzzleId);
+
+      const result = await client.query<{ next_step_hints_used: number }>(
+        `UPDATE game_results
+         SET next_step_hints_used = next_step_hints_used + 1, hints_used = hints_used + 1, updated_at = NOW()
+         WHERE user_id = $1::uuid AND puzzle_id = $2
+         RETURNING next_step_hints_used`,
+        [userId, puzzleId],
+      );
+
+      await client.query("COMMIT");
+      return result.rows[0].next_step_hints_used;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async getNextStepHintsUsed(userId: string, puzzleId: number): Promise<number> {
+    const result = await pgPool.query<{ next_step_hints_used: number }>(
+      `SELECT next_step_hints_used FROM game_results WHERE user_id = $1::uuid AND puzzle_id = $2`,
+      [userId, puzzleId],
+    );
+    return result.rows[0]?.next_step_hints_used ?? 0;
+  }
+}
+
+// Mirrors PgGameResultRepository.upsertAttempt's users-then-game_results upsert pattern -
+// shared by both hint actions, since either can be the very first thing a player does, before
+// /api/complete has ever created these rows. Caller owns the transaction.
+async function ensureUserAndGameResults(client: PoolClient, userId: string, puzzleId: number): Promise<void> {
+  await client.query(
+    `INSERT INTO users (id, username)
+     VALUES ($1::uuid, $2)
+     ON CONFLICT (id) DO NOTHING`,
+    [userId, `user-${userId.slice(0, 8)}`],
+  );
+
+  await client.query(
+    `INSERT INTO game_results (user_id, puzzle_id, attempts, hints_used, next_step_hints_used, solved)
+     VALUES ($1::uuid, $2, 0, 0, 0, FALSE)
+     ON CONFLICT (user_id, puzzle_id) DO NOTHING`,
+    [userId, puzzleId],
+  );
 }

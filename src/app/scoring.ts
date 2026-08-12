@@ -1,6 +1,8 @@
-// Deliberately gentler than the 150-point invalid-submission penalty, since a hint is opt-in
-// rather than a mistake.
-export const HINT_PENALTY_POINTS = 100;
+// The two hint buttons cost different amounts (see src/backend/services/hints/hint.service.ts,
+// which mirrors these same two numbers), so calculatePuzzleScore takes a single precomputed
+// hintPenalty total rather than a flat rate * a count.
+export const ANCHOR_CLUB_HINT_PENALTY_POINTS = 50;
+export const NEXT_STEPS_HINT_PENALTY_POINTS = 150;
 
 export interface PuzzleScoreBreakdown {
   score: number;
@@ -14,14 +16,14 @@ export interface PuzzleScoreInput {
   chainLength: number;
   optimalLength: number;
   invalidSubmissions: number;
-  hintsUsed?: number;
+  hintPenalty?: number;
   solved: boolean;
 }
 
 export function calculatePuzzleScore(input: PuzzleScoreInput): PuzzleScoreBreakdown {
   const baseScore = 1000;
   const invalidPenalty = input.invalidSubmissions * 150;
-  const hintPenalty = (input.hintsUsed ?? 0) * HINT_PENALTY_POINTS;
+  const hintPenalty = input.hintPenalty ?? 0;
 
   const liveScore = Math.max(0, baseScore - invalidPenalty - hintPenalty);
 
@@ -37,7 +39,7 @@ export function calculatePuzzleScore(input: PuzzleScoreInput): PuzzleScoreBreakd
     chainLength: input.chainLength,
     optimalLength: input.optimalLength,
     invalidSubmissions: input.invalidSubmissions,
-    hintsUsed: input.hintsUsed ?? 0,
+    hintPenalty,
     solved: input.solved,
     liveScore,
     optimalRouteBonus,

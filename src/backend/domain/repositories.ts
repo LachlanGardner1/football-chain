@@ -49,16 +49,25 @@ export interface RevealedAnchorClubHint {
 
 export interface HintRepository {
   getRevealedAnchorClubHints(userId: string, puzzleId: number): Promise<RevealedAnchorClubHint[]>;
-  getMostTimeAtClub(playerId: number, datasetVersionId: number): Promise<{ clubId: number; clubName: string } | null>;
+  // Longest-tenure-first, excluding clubs already revealed for this anchor - null once every
+  // club that player has played for has been revealed.
+  getNextUnrevealedClub(
+    playerId: number,
+    datasetVersionId: number,
+    excludeClubIds: number[],
+  ): Promise<{ clubId: number; clubName: string } | null>;
+  // Ensures users/game_results rows exist (a hint can be the very first thing a player does,
+  // before any /api/complete call), inserts the reveal (no-op on a race/repeat), and bumps
+  // the generic hints_used counter.
   recordAnchorClubHint(params: {
     userId: string;
     puzzleId: number;
     anchorPlayerId: number;
     clubId: number;
   }): Promise<void>;
-  // Ensures a game_results row exists (a hint can be the very first thing a player does,
-  // before any /api/complete call) and returns the post-increment count.
-  incrementHintsUsed(userId: string, puzzleId: number): Promise<number>;
+  // Ensures users/game_results rows exist, bumps next_step_hints_used (and the generic
+  // hints_used counter), returns the new next_step_hints_used count.
+  incrementNextStepHints(userId: string, puzzleId: number): Promise<number>;
   // Read-only (no upsert) - used to hydrate hint state on page load, e.g. after a refresh.
-  getHintsUsed(userId: string, puzzleId: number): Promise<number>;
+  getNextStepHintsUsed(userId: string, puzzleId: number): Promise<number>;
 }
