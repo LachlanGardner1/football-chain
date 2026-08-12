@@ -62,26 +62,37 @@ async function run(): Promise<void> {
       "Philippe Coutinho",
     ];
 
+    // Club names here must match transfermarkt's official names exactly (not a short/common
+    // name) for any club that db:import-transfermarkt will also import - otherwise the two
+    // insert paths create two separate rows for the same real club (mismatched
+    // normalized_name means the ON CONFLICT dedup never fires), and depending on which one a
+    // player's real edges point to, the UI can reject a correct answer as "didn't play
+    // there." Fixed for 8 clubs found this way (5 discovered via real gameplay testing, 3 -
+    // Ajax/AS Roma/Bayer Leverkusen - previously cleaned up by hand directly in the database
+    // without this file being updated, which is why they silently came back as a latent risk
+    // on any future db:reset-dev + db:import-transfermarkt cycle). See
+    // db/migrations/007_merge_duplicate_clubs.sql for the one-time cleanup of rows that
+    // already exist under the old short names.
     const clubs = [
       "Tottenham Hotspur",
       "Real Madrid",
-      "Juventus",
+      "Juventus FC",
       "AC Milan",
       "Paris Saint-Germain",
-      "Barcelona",
-      "Chelsea",
+      "FC Barcelona",
+      "Chelsea FC",
       "Al Hilal",
       "Borussia Dortmund",
       "Inter Milan",
       "Bayern Munich",
-      "Arsenal",
+      "Arsenal FC",
       "New York Red Bulls",
       "Manchester United",
-      "Liverpool",
+      "Liverpool FC",
       "LA Galaxy",
-      "Ajax",
-      "AS Roma",
-      "Bayer Leverkusen",
+      "Ajax Amsterdam",
+      "Associazione Sportiva Roma",
+      "Bayer 04 Leverkusen",
     ];
 
     const playerIds = new Map<string, number>();
@@ -138,36 +149,36 @@ async function run(): Promise<void> {
       { player: "Luka Modric", club: "Tottenham Hotspur", startYear: 2008, endYear: 2012 },
       { player: "Luka Modric", club: "Real Madrid", startYear: 2012 },
       { player: "Cristiano Ronaldo", club: "Real Madrid", startYear: 2009, endYear: 2018 },
-      { player: "Cristiano Ronaldo", club: "Juventus", startYear: 2018, endYear: 2021 },
+      { player: "Cristiano Ronaldo", club: "Juventus FC", startYear: 2018, endYear: 2021 },
       { player: "Cristiano Ronaldo", club: "Al Hilal", startYear: 2023 },
-      { player: "Andrea Pirlo", club: "Juventus", startYear: 2011, endYear: 2015 },
+      { player: "Andrea Pirlo", club: "Juventus FC", startYear: 2011, endYear: 2015 },
       { player: "Andrea Pirlo", club: "AC Milan", startYear: 2001, endYear: 2011 },
       { player: "Kaka", club: "AC Milan", startYear: 2003, endYear: 2009 },
       { player: "Kaka", club: "Real Madrid", startYear: 2009, endYear: 2013 },
       { player: "Ronaldinho", club: "Paris Saint-Germain", startYear: 2001, endYear: 2003 },
-      { player: "Ronaldinho", club: "Barcelona", startYear: 2003, endYear: 2008 },
+      { player: "Ronaldinho", club: "FC Barcelona", startYear: 2003, endYear: 2008 },
       { player: "Ronaldinho", club: "AC Milan", startYear: 2008, endYear: 2011 },
-      { player: "Gianfranco Zola", club: "Chelsea", startYear: 1996, endYear: 2003 },
+      { player: "Gianfranco Zola", club: "Chelsea FC", startYear: 1996, endYear: 2003 },
       { player: "Neymar", club: "Paris Saint-Germain", startYear: 2017, endYear: 2023 },
-      { player: "Neymar", club: "Barcelona", startYear: 2013, endYear: 2017 },
+      { player: "Neymar", club: "FC Barcelona", startYear: 2013, endYear: 2017 },
       { player: "Sergio Ramos", club: "Real Madrid", startYear: 2005, endYear: 2021 },
       { player: "Sergio Ramos", club: "Paris Saint-Germain", startYear: 2021, endYear: 2023 },
-      { player: "Thierry Henry", club: "Arsenal", startYear: 1999, endYear: 2007 },
-      { player: "Thierry Henry", club: "Barcelona", startYear: 2007, endYear: 2010 },
+      { player: "Thierry Henry", club: "Arsenal FC", startYear: 1999, endYear: 2007 },
+      { player: "Thierry Henry", club: "FC Barcelona", startYear: 2007, endYear: 2010 },
       { player: "Thierry Henry", club: "Paris Saint-Germain", startYear: 2012, endYear: 2014 },
       { player: "Thierry Henry", club: "New York Red Bulls", startYear: 2010, endYear: 2014 },
       { player: "David Beckham", club: "Manchester United", startYear: 1992, endYear: 2003 },
       { player: "David Beckham", club: "Real Madrid", startYear: 2003, endYear: 2009 },
       { player: "David Beckham", club: "LA Galaxy", startYear: 2011, endYear: 2013 },
       { player: "Paolo Maldini", club: "AC Milan", startYear: 1984, endYear: 2009 },
-      { player: "Andriy Shevchenko", club: "Chelsea", startYear: 2006, endYear: 2009 },
+      { player: "Andriy Shevchenko", club: "Chelsea FC", startYear: 2006, endYear: 2009 },
       { player: "Andriy Shevchenko", club: "AC Milan", startYear: 1999, endYear: 2006 },
-      { player: "Michael Owen", club: "Liverpool", startYear: 1997, endYear: 2004 },
+      { player: "Michael Owen", club: "Liverpool FC", startYear: 1997, endYear: 2004 },
       { player: "Michael Owen", club: "Real Madrid", startYear: 2004, endYear: 2005 },
       { player: "Edinson Cavani", club: "Paris Saint-Germain", startYear: 2013, endYear: 2020 },
       { player: "Edinson Cavani", club: "Manchester United", startYear: 2020, endYear: 2022 },
-      { player: "Philippe Coutinho", club: "Liverpool", startYear: 2013, endYear: 2018 },
-      { player: "Philippe Coutinho", club: "Barcelona", startYear: 2018, endYear: 2022 },
+      { player: "Philippe Coutinho", club: "Liverpool FC", startYear: 2013, endYear: 2018 },
+      { player: "Philippe Coutinho", club: "FC Barcelona", startYear: 2018, endYear: 2022 },
       { player: "Philippe Coutinho", club: "Bayern Munich", startYear: 2022, endYear: 2023 },
     ];
 
