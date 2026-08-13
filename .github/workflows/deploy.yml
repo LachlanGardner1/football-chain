@@ -79,6 +79,7 @@ jobs:
           TF_VAR_neon_database_url: ${{ secrets.NEON_DATABASE_URL }}
           TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
           TF_VAR_db_username: ${{ secrets.DB_USERNAME }}
+          TF_LOG: TRACE
         run: terraform plan -out=tfplan
 
       - name: terraform apply
