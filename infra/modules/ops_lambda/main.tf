@@ -1,7 +1,7 @@
 locals {
   name_prefix               = "${var.project}-${var.environment}"
   use_vpc                   = length(var.private_app_subnet_ids) > 0
-  use_external_database_url = var.external_database_url_secret_arn != null
+  use_external_database_url = var.use_external_database_url
 }
 
 # Runs the "migrate" and "rotate-puzzles" actions (scripts/ops-lambda/handler.ts). Both are

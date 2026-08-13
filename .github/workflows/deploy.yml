@@ -57,7 +57,7 @@ jobs:
 
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: "1.7.5"
+          terraform_version: "1.15.8"
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -68,12 +68,25 @@ jobs:
         working-directory: ${{ env.TF_ENV_DIR }}
         run: terraform init
 
+      # dev's TF_VAR_neon_database_url / prod's TF_VAR_db_password + TF_VAR_db_username are
+      # sensitive, no-default Terraform variables - each only exists as a secret on the
+      # matching GitHub Environment, so the "other" environment's vars simply resolve to an
+      # empty string here and Terraform never references them (dev's variables.tf has no
+      # db_password variable to fail on, and vice versa).
       - name: terraform plan
         working-directory: ${{ env.TF_ENV_DIR }}
+        env:
+          TF_VAR_neon_database_url: ${{ secrets.NEON_DATABASE_URL }}
+          TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+          TF_VAR_db_username: ${{ secrets.DB_USERNAME }}
         run: terraform plan -out=tfplan
 
       - name: terraform apply
         working-directory: ${{ env.TF_ENV_DIR }}
+        env:
+          TF_VAR_neon_database_url: ${{ secrets.NEON_DATABASE_URL }}
+          TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+          TF_VAR_db_username: ${{ secrets.DB_USERNAME }}
         run: terraform apply -auto-approve tfplan
 
       - name: Run pending DB migrations

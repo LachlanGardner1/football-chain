@@ -53,6 +53,7 @@ module "lambda_app" {
   environment                      = var.environment
   open_next_output_path            = "${local.open_next_output_root}/server-functions/default"
   external_database_url_secret_arn = aws_secretsmanager_secret.neon_db.arn
+  use_external_database_url        = true
   log_group_name                   = module.observability.log_group_name
   memory_size                      = var.lambda_memory_size
   timeout                          = var.lambda_timeout
@@ -79,6 +80,7 @@ module "ops_lambda" {
   environment                      = var.environment
   ops_lambda_build_path            = local.ops_lambda_build_path
   external_database_url_secret_arn = aws_secretsmanager_secret.neon_db.arn
+  use_external_database_url        = true
   log_group_name                   = module.observability.ops_log_group_name
 
   # Same reasoning as lambda_app's depends_on: the CloudWatch log group needs to exist

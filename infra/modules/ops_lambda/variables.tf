@@ -37,6 +37,13 @@ variable "external_database_url_secret_arn" {
   description = "ARN of a Secrets Manager secret holding a complete DATABASE_URL connection string, for a non-RDS database host."
 }
 
+# See infra/modules/lambda_app/variables.tf for why this can't just be inferred from
+# `external_database_url_secret_arn != null` - the ARN can be unknown at plan time.
+variable "use_external_database_url" {
+  type    = bool
+  default = false
+}
+
 variable "log_group_name" { type = string }
 
 variable "memory_size" {

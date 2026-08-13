@@ -43,6 +43,15 @@ variable "external_database_url_secret_arn" {
   description = "ARN of a Secrets Manager secret holding a complete DATABASE_URL connection string, for a non-RDS database host."
 }
 
+# A plain `external_database_url_secret_arn != null` check can't drive a `count` - if the ARN
+# comes from a secret created in this same apply (as it does for dev), it's unknown at plan
+# time, and count/for_each require a value known before apply. This flag is set directly by the
+# caller instead, so it stays known at plan time regardless of where the ARN itself comes from.
+variable "use_external_database_url" {
+  type    = bool
+  default = false
+}
+
 variable "log_group_name" { type = string }
 
 variable "memory_size" {

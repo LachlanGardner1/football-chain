@@ -22,8 +22,12 @@ resource "null_resource" "upload_assets" {
     ]))
   }
 
+  # Unquoted - none of these interpolated values ever contain spaces (fixed project/env naming
+  # and build-output paths), and quoting here breaks on Windows: cmd.exe (used by local-exec's
+  # default Windows interpreter) doesn't strip backslash-escaped quotes the way a POSIX shell
+  # does, so the AWS CLI ends up receiving literal quote characters as part of the path/URI.
   provisioner "local-exec" {
-    command = "aws s3 sync \"${var.open_next_assets_path}\" \"s3://${aws_s3_bucket.assets.bucket}/_assets\" --delete"
+    command = "aws s3 sync ${var.open_next_assets_path} s3://${aws_s3_bucket.assets.bucket}/_assets --delete"
   }
 
   depends_on = [aws_s3_bucket_public_access_block.assets]
@@ -144,6 +148,18 @@ resource "aws_s3_bucket_policy" "assets" {
 resource "aws_lambda_permission" "cloudfront" {
   statement_id  = "AllowCloudFrontInvokeFunctionUrl"
   action        = "lambda:InvokeFunctionUrl"
+  function_name = var.lambda_function_name
+  principal     = "cloudfront.amazonaws.com"
+  source_arn    = aws_cloudfront_distribution.this.arn
+}
+
+# As of October 2025, AWS requires CloudFront's OAC-signed requests to a Lambda Function URL
+# to be granted BOTH lambda:InvokeFunctionUrl and lambda:InvokeFunction - without this second
+# grant, CloudFront gets a 403 from the function URL even though the OAC signing itself is
+# working correctly.
+resource "aws_lambda_permission" "cloudfront_invoke_function" {
+  statement_id  = "AllowCloudFrontInvokeFunction"
+  action        = "lambda:InvokeFunction"
   function_name = var.lambda_function_name
   principal     = "cloudfront.amazonaws.com"
   source_arn    = aws_cloudfront_distribution.this.arn
