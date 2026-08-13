@@ -127,7 +127,7 @@ export default function SpeedRoundHomePage() {
         {error ? <p className="error-text">{error}</p> : null}
       </div>
 
-      <style jsx>{`
+      <style jsx global>{`
         .page {
           min-height: 100dvh;
           background: var(--bg);

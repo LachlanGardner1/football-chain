@@ -528,7 +528,7 @@ export default function SpeedRoundMatchPage() {
         )}
       </div>
 
-      <style jsx>{`
+      <style jsx global>{`
         .page {
           min-height: 100dvh;
           background: var(--bg);
