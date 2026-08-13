@@ -305,7 +305,7 @@ export async function runDailyRotation(pool: Pool, options?: RunDailyRotationOpt
   const client = await pool.connect();
   try {
     const todayResult = await client.query<{ today: string }>(
-      `SELECT to_char(CURRENT_DATE, 'YYYY-MM-DD') AS today`,
+      `SELECT to_char((now() AT TIME ZONE 'Australia/Sydney')::date, 'YYYY-MM-DD') AS today`,
     );
     const today = todayResult.rows[0].today;
 

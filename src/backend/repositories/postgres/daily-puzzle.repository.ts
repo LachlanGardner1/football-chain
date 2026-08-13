@@ -86,7 +86,9 @@ export class PgDailyPuzzleRepository implements DailyPuzzleRepository {
 
   async getPublishedDates(): Promise<{ dates: string[]; today: string }> {
     const [todayResult, datesResult] = await Promise.all([
-      pgPool.query<{ today: string }>(`SELECT to_char(CURRENT_DATE, 'YYYY-MM-DD') AS today`),
+      pgPool.query<{ today: string }>(
+        `SELECT to_char((now() AT TIME ZONE 'Australia/Sydney')::date, 'YYYY-MM-DD') AS today`,
+      ),
       pgPool.query<{ puzzle_date: string }>(
         `SELECT to_char(puzzle_date, 'YYYY-MM-DD') AS puzzle_date
          FROM daily_puzzles

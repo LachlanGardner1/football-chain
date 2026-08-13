@@ -66,9 +66,9 @@ export class PgGameResultRepository implements GameResultRepository {
         // matching how daily-puzzle games like Wordle handle archive play.
         if (solved) {
           await client.query(
-            `SELECT refresh_user_streak($1::uuid, CURRENT_DATE)
+            `SELECT refresh_user_streak($1::uuid, (now() AT TIME ZONE 'Australia/Sydney')::date)
              WHERE EXISTS (
-               SELECT 1 FROM daily_puzzles WHERE id = $2 AND puzzle_date = CURRENT_DATE
+               SELECT 1 FROM daily_puzzles WHERE id = $2 AND puzzle_date = (now() AT TIME ZONE 'Australia/Sydney')::date
              )`,
             [params.userId, params.puzzleId],
           );
@@ -82,7 +82,7 @@ export class PgGameResultRepository implements GameResultRepository {
              SET current_streak = 0, updated_at = NOW()
              WHERE user_id = $1::uuid
                AND EXISTS (
-                 SELECT 1 FROM daily_puzzles WHERE id = $2 AND puzzle_date = CURRENT_DATE
+                 SELECT 1 FROM daily_puzzles WHERE id = $2 AND puzzle_date = (now() AT TIME ZONE 'Australia/Sydney')::date
                )`,
             [params.userId, params.puzzleId],
           );
@@ -141,7 +141,7 @@ export class PgGameResultRepository implements GameResultRepository {
          -- broken here even though the stored row isn't reset until the next solve.
          CASE
            WHEN us.last_solved_date IS NULL THEN 0
-           WHEN us.last_solved_date >= CURRENT_DATE - INTERVAL '1 day' THEN us.current_streak
+           WHEN us.last_solved_date >= (now() AT TIME ZONE 'Australia/Sydney')::date - INTERVAL '1 day' THEN us.current_streak
            ELSE 0
          END AS current_streak,
          us.max_streak
