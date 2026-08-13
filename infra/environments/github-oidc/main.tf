@@ -28,15 +28,19 @@ resource "aws_iam_openid_connect_provider" "github" {
 }
 
 locals {
-  # GitHub issues a different "sub" claim shape depending on whether the calling job declares
-  # a `environment:` - a job with one gets `repo:{owner}/{repo}:environment:{name}`, not the
-  # `ref:refs/heads/{branch}` form. deploy.yml's job always sets `environment: dev|prod`, so it
+  # This repo has GitHub's April 2026 "immutable subject claims" format active (confirmed via
+  # a CloudTrail AssumeRoleWithWebIdentity denial showing the real sub claim), which embeds
+  # numeric owner/repo IDs: repo:OWNER@OWNER-ID/REPO@REPO-ID:... instead of just the
+  # (reassignable) names. On top of that, the claim shape also depends on whether the calling
+  # job declares an `environment:` - a job with one gets ...:environment:{name} instead of
+  # ...:ref:refs/heads/{branch}. deploy.yml's job always sets `environment: dev|prod`, so it
   # needs the environment-scoped form for both environments; rotate-puzzles.yml's job sets no
   # environment at all, so it needs the ref-scoped form instead. invoke_ops_lambda is shared by
   # both workflows, so its condition has to accept all three.
-  repo_sub_ref              = "repo:${var.github_owner}/${var.github_repo}:ref:refs/heads/main"
-  repo_sub_environment_dev  = "repo:${var.github_owner}/${var.github_repo}:environment:dev"
-  repo_sub_environment_prod = "repo:${var.github_owner}/${var.github_repo}:environment:prod"
+  repo_id_prefix            = "repo:${var.github_owner}@${var.github_owner_id}/${var.github_repo}@${var.github_repo_id}"
+  repo_sub_ref              = "${local.repo_id_prefix}:ref:refs/heads/main"
+  repo_sub_environment_dev  = "${local.repo_id_prefix}:environment:dev"
+  repo_sub_environment_prod = "${local.repo_id_prefix}:environment:prod"
 }
 
 # --- Deploy role: terraform apply + the deploy-time "migrate" invoke -----------------------
