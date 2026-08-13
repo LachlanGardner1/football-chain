@@ -99,6 +99,7 @@ interface ReferencedClub {
   name: string;
   country: string | null;
   tmId: string | null;
+  domesticCompetitionId: string | null;
 }
 
 function chunk<T>(items: T[], size: number): T[][] {
@@ -193,11 +194,12 @@ async function main(): Promise<void> {
     }
   }
 
-  const clubByTmId = new Map<string, { name: string; country: string | null }>();
+  const clubByTmId = new Map<string, { name: string; country: string | null; domesticCompetitionId: string | null }>();
   for (const club of allClubs) {
     clubByTmId.set(club.club_id, {
       name: club.name,
       country: (club.domestic_competition_id && competitionCountry.get(club.domestic_competition_id)) || null,
+      domesticCompetitionId: club.domestic_competition_id || null,
     });
   }
 
@@ -291,13 +293,18 @@ async function main(): Promise<void> {
     if (!info) continue;
     const key = normalizeName(info.name);
     if (!referencedClubsByNormalizedName.has(key)) {
-      referencedClubsByNormalizedName.set(key, { name: info.name, country: info.country, tmId: edge.clubTmId });
+      referencedClubsByNormalizedName.set(key, {
+        name: info.name,
+        country: info.country,
+        tmId: edge.clubTmId,
+        domesticCompetitionId: info.domesticCompetitionId,
+      });
     }
   }
   for (const edge of valuationDerivedEdges) {
     const key = normalizeName(edge.clubName);
     if (!referencedClubsByNormalizedName.has(key)) {
-      referencedClubsByNormalizedName.set(key, { name: edge.clubName, country: null, tmId: null });
+      referencedClubsByNormalizedName.set(key, { name: edge.clubName, country: null, tmId: null, domesticCompetitionId: null });
     }
   }
   const referencedClubs = Array.from(referencedClubsByNormalizedName.values());
@@ -391,19 +398,24 @@ async function main(): Promise<void> {
 
     // Clubs: same batch-insert-then-lookup pattern, scoped to clubs actually referenced by a
     // derived edge from either source (so nothing enters the table without at least one
-    // edge).
+    // edge). domestic_competition_id uses DO UPDATE (not DO NOTHING like the rest of the row)
+    // so re-running the import backfills league affiliation onto already-existing club rows
+    // too - see db/migrations/014_club_competitions.sql and
+    // scripts/puzzle-generation/generate-speed-round-pool.ts, which needs this to restrict
+    // anchor selection to top-5-league clubs.
     for (const batch of chunk(referencedClubs, BATCH_SIZE)) {
       const values: unknown[] = [];
       const placeholders = batch.map((club, index) => {
-        const base = index * 4;
-        values.push(club.name, normalizeName(club.name), club.country, club.tmId);
-        return `($${base + 1},$${base + 2},$${base + 3},$${base + 4})`;
+        const base = index * 5;
+        values.push(club.name, normalizeName(club.name), club.country, club.tmId, club.domesticCompetitionId);
+        return `($${base + 1},$${base + 2},$${base + 3},$${base + 4},$${base + 5})`;
       });
 
       await client.query(
-        `INSERT INTO clubs (canonical_name, normalized_name, country, source_entity_id)
+        `INSERT INTO clubs (canonical_name, normalized_name, country, source_entity_id, domestic_competition_id)
          VALUES ${placeholders.join(",")}
-         ON CONFLICT (normalized_name) DO NOTHING`,
+         ON CONFLICT (normalized_name) DO UPDATE SET
+           domestic_competition_id = EXCLUDED.domestic_competition_id`,
         values,
       );
     }

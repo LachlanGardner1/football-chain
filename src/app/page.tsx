@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
 import {
   ArrowsClockwise,
   CheckCircle,
@@ -9,9 +10,11 @@ import {
   Flame,
   Gauge,
   Lightbulb,
+  Lock,
   Moon,
   SoccerBall,
   Sun,
+  Sword,
   Trophy,
   XCircle,
 } from '@phosphor-icons/react';
@@ -77,6 +80,14 @@ type HintStateResponse = {
   hintPenalty: number;
 };
 
+type PuzzleOutcome = {
+  outcomeLocked: boolean;
+  solved: boolean;
+  failedAt: string | null;
+  bestChainLength: number | null;
+  lockedScore: number | null;
+};
+
 function sortMatches(a: CatalogEntry, b: CatalogEntry) {
   return a.name.localeCompare(b.name);
 }
@@ -121,11 +132,26 @@ export default function HomePage() {
   const [stepValidationStates, setStepValidationStates] = useState<Record<number, 'valid' | 'invalid' | 'repeat' | null>>({});
   const [shakeKey, setShakeKey] = useState(0);
   const [solved, setSolved] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [lockedOutcome, setLockedOutcome] = useState<PuzzleOutcome | null>(null);
+  const [practiceMode, setPracticeMode] = useState(false);
   const [highlightedSuggestionIndex, setHighlightedSuggestionIndex] = useState<Record<number, number>>({});
   const [scoreBreakdown, setScoreBreakdown] = useState<PuzzleScoreBreakdown | null>(null);
   const [invalidSubmissions, setInvalidSubmissions] = useState(0);
   const [serverStats, setServerStats] = useState<ServerStats | null>(null);
-  const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().slice(0, 10));
+  // NOT new Date().toISOString().slice(0, 10) - toISOString() converts to UTC first, so for
+  // anyone meaningfully ahead of UTC (e.g. AEST/AEDT, UTC+10/+11) this silently shows
+  // yesterday's date for several hours after their own local midnight. Build the date from
+  // the browser's local getFullYear/getMonth/getDate instead, matching
+  // src/app/api/daily/date.ts's todayLocalDateIso() (server-side equivalent for the no-date
+  // request case).
+  const [selectedDate, setSelectedDate] = useState(() => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  });
   const [availableDates, setAvailableDates] = useState<AvailableDates | null>(null);
   const [dateInputError, setDateInputError] = useState<string | null>(null);
   const [hintPenalty, setHintPenalty] = useState(0);
@@ -137,6 +163,20 @@ export default function HomePage() {
   const [nextStepsMessage, setNextStepsMessage] = useState<string | null>(null);
   const validationRequestIdRef = useRef(0);
   const invalidSubmissionCountRef = useRef(0);
+  // Hints are a shared pool server-side (spending one during the official round still counts
+  // if spent again during a later practice round), so the server always reports the *true
+  // cumulative* penalty for this (user, puzzle) pair. rawHintPenaltyRef tracks that raw total;
+  // hintPenaltyBaselineRef is a snapshot of it taken whenever a fresh attempt starts (initial
+  // load, or "play for fun"), so `hintPenalty` state can show only *this attempt's* spend -
+  // letting a practice round start from a clean 1000 to show what was actually achievable,
+  // even though the underlying hint records are still shared.
+  const rawHintPenaltyRef = useRef(0);
+  const hintPenaltyBaselineRef = useRef(0);
+
+  function applyServerHintPenalty(rawTotal: number) {
+    rawHintPenaltyRef.current = rawTotal;
+    setHintPenalty(Math.max(0, rawTotal - hintPenaltyBaselineRef.current));
+  }
 
   const sortedPlayers = useMemo(() => [...catalog.players].sort(sortMatches), [catalog.players]);
   const sortedClubs = useMemo(() => [...catalog.clubs].sort(sortMatches), [catalog.clubs]);
@@ -176,7 +216,8 @@ export default function HomePage() {
           (revealed[hint.anchorPlayerId] ??= []).push(hint.clubName);
         }
         setRevealedAnchorClubHints(revealed);
-        setHintPenalty(data.hintPenalty);
+        applyServerHintPenalty(data.hintPenalty);
+        const effectiveHintPenalty = Math.max(0, data.hintPenalty - hintPenaltyBaselineRef.current);
         // A fresh page load always starts with an empty confirmed chain, but hints spent in
         // an earlier visit are still real - without this, the score display would
         // misleadingly show 1000 until the next submission.
@@ -185,11 +226,20 @@ export default function HomePage() {
             chainLength: 0,
             optimalLength: optimalLength ?? 1,
             invalidSubmissions: 0,
-            hintPenalty: data.hintPenalty,
+            hintPenalty: effectiveHintPenalty,
             solved: false,
           }),
         );
       })
+      .catch(() => undefined);
+  }
+
+  // Hydrates whatever outcome is already locked in for this puzzle (e.g. after a refresh, or
+  // returning to a puzzle already played earlier today) - drives the "already played" summary.
+  function fetchPuzzleOutcome(puzzleId: number) {
+    fetch(`/api/complete?puzzleId=${puzzleId}`)
+      .then((res) => res.json())
+      .then((data: PuzzleOutcome) => setLockedOutcome(data))
       .catch(() => undefined);
   }
 
@@ -220,6 +270,9 @@ export default function HomePage() {
         setStepSearchValues({});
         setStepShowSuggestions({});
         setSolved(false);
+        setFailed(false);
+        setLockedOutcome(null);
+        setPracticeMode(false);
         setResult(null);
         setError(null);
         setInvalidStepIndex(null);
@@ -229,12 +282,15 @@ export default function HomePage() {
         invalidSubmissionCountRef.current = 0;
         setNextStepsReveal(null);
         setNextStepsMessage(null);
+        rawHintPenaltyRef.current = 0;
+        hintPenaltyBaselineRef.current = 0;
         setHintPenalty(0);
         setRevealedAnchorClubHints({});
         setExhaustedAnchors(new Set());
         setAnchorHintLoading({});
         if (puzzleData.puzzleId) {
           fetchHintState(puzzleData.puzzleId, puzzleData.optimalLength);
+          fetchPuzzleOutcome(puzzleData.puzzleId);
         }
         setLoading(false);
       })
@@ -281,8 +337,34 @@ export default function HomePage() {
     setStepValidationStates((current) => ({ ...current, [index]: null }));
   }
 
+  // Locks in a loss the first time it fires for this (user, puzzle) - the backend safely
+  // no-ops the official record if an earlier call (win or loss) already locked it, so this is
+  // also what fires when a replay/practice round runs the score back down to 0.
+  function handleFailure(chainLengthAtFailure: number, score: number) {
+    if (!puzzle || failed || solved) return;
+    setFailed(true);
+
+    fetch('/api/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        puzzleId: puzzle.puzzleId,
+        outcome: 'FAILED',
+        // best_chain_length has a DB check constraint of NULL or > 0 - a failure with no
+        // confirmed steps yet has no meaningful chain length to record.
+        chainLength: chainLengthAtFailure > 0 ? chainLengthAtFailure : undefined,
+        score,
+      }),
+    })
+      .then(() => {
+        fetchServerStats();
+        fetchPuzzleOutcome(puzzle.puzzleId);
+      })
+      .catch(() => undefined);
+  }
+
   function updateScore(nextChainLength: number, solved: boolean, nextInvalidSubmissions: number, nextHintPenalty: number = hintPenalty) {
-    if (!puzzle) return;
+    if (!puzzle) return undefined;
 
     const nextScore = calculatePuzzleScore({
       chainLength: nextChainLength,
@@ -311,6 +393,15 @@ export default function HomePage() {
       const previousScore = currentBreakdown?.score ?? 1000;
       return resolveProgressScore(previousScore, nextScore, true);
     });
+
+    if (!solved && nextScore.score === 0) {
+      handleFailure(nextChainLength, nextScore.score);
+    }
+
+    // Callers that need the score for this exact update (e.g. to lock it in via
+    // /api/complete) can't safely read the `scoreBreakdown` state right after calling this -
+    // setState is async, so it would still hold the *previous* render's value.
+    return nextScore;
   }
 
   async function validateCurrentStep(index: number) {
@@ -378,7 +469,7 @@ export default function HomePage() {
         invalidSubmissions: nextInvalidSubmissions,
         optimalLength: puzzle.optimalLength ?? 1,
       });
-      updateScore(data.chainLength ?? chainToValidate.length, data.solved, nextInvalidSubmissions);
+      const nextScore = updateScore(data.chainLength ?? chainToValidate.length, data.solved, nextInvalidSubmissions);
 
       setStepValidationStates((current) => ({ ...current, [index]: data.valid ? 'valid' : 'invalid' }));
 
@@ -400,11 +491,15 @@ export default function HomePage() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               puzzleId: puzzle.puzzleId,
-              solved: true,
+              outcome: 'SOLVED',
               chainLength: data.chainLength ?? chainToValidate.length,
+              score: nextScore?.score ?? 0,
             }),
           })
-            .then(() => fetchServerStats())
+            .then(() => {
+              fetchServerStats();
+              fetchPuzzleOutcome(puzzle.puzzleId);
+            })
             .catch(() => undefined);
         } else if (index === steps.length - 1) {
           appendNextStep();
@@ -443,23 +538,53 @@ export default function HomePage() {
 
   function resetPuzzle() {
     if (!puzzle) return;
+    // The official result for today only ever locks in on the FIRST terminal outcome (see
+    // GameResultRepository.upsertAttempt) - once that's happened, any further round is just
+    // for fun, so flip into practice framing rather than implying this replay is official.
+    const enteringPracticeMode = Boolean(lockedOutcome?.outcomeLocked);
+    if (enteringPracticeMode) {
+      setPracticeMode(true);
+    }
     setSteps([{ id: null, type: 'PLAYER' }]);
     setStepSearchValues({});
     setStepShowSuggestions({});
     setSolved(false);
+    setFailed(false);
     setResult(null);
     setError(null);
     setInvalidStepIndex(null);
     setStepValidationStates({});
-    setScoreBreakdown(null);
     setInvalidSubmissions(0);
     invalidSubmissionCountRef.current = 0;
     setShakeKey((value) => value + 1);
-    // revealedAnchorClubHints/exhaustedAnchors/hintPenalty are NOT cleared here - they're
-    // spent server-side against this puzzle regardless of a local chain reset. Only the
-    // next-steps reveal (tied to the now-cleared chain position) goes stale.
     setNextStepsReveal(null);
     setNextStepsMessage(null);
+
+    let hintPenaltyForDisplay = hintPenalty;
+    if (enteringPracticeMode) {
+      // The hint records themselves are still a shared pool with the official attempt (see
+      // rawHintPenaltyRef/hintPenaltyBaselineRef above) - re-baselining here just means only
+      // *new* hint spend counts against the display for this round, so a practice round starts
+      // clean and shows the player what they could still achieve.
+      hintPenaltyBaselineRef.current = rawHintPenaltyRef.current;
+      hintPenaltyForDisplay = 0;
+      setHintPenalty(0);
+      setRevealedAnchorClubHints({});
+      setExhaustedAnchors(new Set());
+      setAnchorHintLoading({});
+    }
+
+    // Recompute (rather than null it out) so the score display is accurate immediately -
+    // otherwise it would misleadingly flash a stale value until the next submission.
+    setScoreBreakdown(
+      calculatePuzzleScore({
+        chainLength: 0,
+        optimalLength: puzzle.optimalLength ?? 1,
+        invalidSubmissions: 0,
+        hintPenalty: hintPenaltyForDisplay,
+        solved: false,
+      }),
+    );
   }
 
   function confirmedChainForHints() {
@@ -486,7 +611,8 @@ export default function HomePage() {
       });
 
       const data = (await response.json()) as RevealAnchorClubResponse;
-      setHintPenalty(data.hintPenalty);
+      applyServerHintPenalty(data.hintPenalty);
+      const effectiveHintPenalty = Math.max(0, data.hintPenalty - hintPenaltyBaselineRef.current);
 
       if (data.kind === 'CLUB_REVEALED') {
         setRevealedAnchorClubHints((current) => ({
@@ -497,7 +623,7 @@ export default function HomePage() {
         setExhaustedAnchors((current) => new Set(current).add(anchorPlayerId));
       }
 
-      updateScore(chainTrail.length, solved, invalidSubmissionCountRef.current, data.hintPenalty);
+      updateScore(chainTrail.length, solved, invalidSubmissionCountRef.current, effectiveHintPenalty);
     } catch {
       // Swallow - the button just stays enabled so the player can retry.
     } finally {
@@ -519,7 +645,8 @@ export default function HomePage() {
       });
 
       const data = (await response.json()) as RevealNextStepsResponse;
-      setHintPenalty(data.hintPenalty);
+      applyServerHintPenalty(data.hintPenalty);
+      const effectiveHintPenalty = Math.max(0, data.hintPenalty - hintPenaltyBaselineRef.current);
 
       if (data.kind === 'STEPS_REVEALED') {
         setNextStepsReveal({ fromLabel: data.fromLabel, steps: data.steps.map((step) => ({ label: step.label, type: step.type })) });
@@ -528,7 +655,7 @@ export default function HomePage() {
         setNextStepsMessage(data.reason);
       }
 
-      updateScore(chainTrail.length, solved, invalidSubmissionCountRef.current, data.hintPenalty);
+      updateScore(chainTrail.length, solved, invalidSubmissionCountRef.current, effectiveHintPenalty);
     } catch (err) {
       setNextStepsMessage(err instanceof Error ? err.message : 'Unable to get a hint right now.');
     } finally {
@@ -556,6 +683,12 @@ export default function HomePage() {
 
   const isPastPuzzle = Boolean(puzzle && availableDates && puzzle.date !== availableDates.today);
 
+  // Shown in place of the chain-building form when this puzzle already has an official result
+  // from earlier (a previous visit today, or any prior day for an archive puzzle) and nothing
+  // has happened yet THIS session - once the player acts (solves/fails/starts a practice
+  // round), their current activity takes over and this summary steps aside.
+  const showAlreadyPlayedSummary = Boolean(lockedOutcome?.outcomeLocked && !practiceMode && !solved && !failed);
+
   function handleDateInputChange(nextValue: string) {
     if (availableDates && !availableDates.dates.includes(nextValue)) {
       setDateInputError('No puzzle was published on that date.');
@@ -580,6 +713,10 @@ export default function HomePage() {
             </div>
           </div>
           <div className="header-actions">
+            <Link href="/speed" className="duel-button" title="Race a friend 1v1 in real time">
+              <Sword size={16} weight="fill" />
+              Duel
+            </Link>
             <button
               type="button"
               onClick={toggleTheme}
@@ -636,6 +773,19 @@ export default function HomePage() {
                   You&apos;re viewing a past puzzle. Solving it won&apos;t count toward your streak.
                 </p>
               ) : null}
+
+              <details className="rules-details">
+                <summary>How scoring &amp; streaks work</summary>
+                <ul className="rules-list">
+                  <li>Once you submit a link, it&apos;s locked in - there&apos;s no undoing a submission.</li>
+                  <li>Wrong or repeated links cost 150 points each.</li>
+                  <li>
+                    Hints cost points too: revealing a club is -{ANCHOR_CLUB_HINT_PENALTY_POINTS}, revealing the next steps is -{NEXT_STEPS_HINT_PENALTY_POINTS}.
+                  </li>
+                  <li>If your score hits 0, the round ends as a loss for today&apos;s puzzle - and it breaks your streak immediately.</li>
+                  <li>Only your first result each day is official. After that, you can keep playing the same puzzle for fun without changing your score or streak.</li>
+                </ul>
+              </details>
             </>
           ) : (
             <p className="hint">{error ?? 'Loading...'}</p>
@@ -762,6 +912,20 @@ export default function HomePage() {
             </div>
             <div className="stat-card">
               <span className="stat-icon">
+                <Lock size={16} weight="fill" />
+              </span>
+              <div>
+                <div className="stat-label">Today&apos;s score</div>
+                <div className="stat-value stat-value--mono">
+                  {lockedOutcome?.outcomeLocked ? lockedOutcome.lockedScore ?? 0 : '—'}
+                </div>
+                <div className="stat-sub">
+                  {lockedOutcome?.outcomeLocked ? (lockedOutcome.solved ? 'locked in' : 'locked in (loss)') : 'not locked in yet'}
+                </div>
+              </div>
+            </div>
+            <div className="stat-card">
+              <span className="stat-icon">
                 <Flame size={16} weight="fill" />
               </span>
               <div>
@@ -782,14 +946,31 @@ export default function HomePage() {
             </div>
           </div>
 
-          {solved ? (
+          {showAlreadyPlayedSummary ? (
+            <div className="solved-panel">
+              <h3 className="solved-title">
+                {lockedOutcome?.solved ? <Trophy size={22} weight="fill" /> : <XCircle size={22} weight="fill" />}
+                {lockedOutcome?.solved ? "You already solved today's puzzle" : "You already played today's puzzle"}
+              </h3>
+              <p className="solved-body">
+                {lockedOutcome?.solved
+                  ? `Your official result is locked in${lockedOutcome.bestChainLength ? ` at a chain length of ${lockedOutcome.bestChainLength}` : ''} with a score of ${lockedOutcome.lockedScore ?? 0} - it won't change.`
+                  : `Your official result for today is a loss, locked in with a score of ${lockedOutcome?.lockedScore ?? 0}. It won't change - and if this is today's puzzle, your streak was already reset when it happened.`}
+              </p>
+              <button type="button" onClick={resetPuzzle} className="btn btn-primary">
+                Play for fun
+              </button>
+            </div>
+          ) : solved ? (
             <div className="solved-panel">
               <h3 className="solved-title">
                 <Trophy size={22} weight="fill" />
                 Puzzle solved!
               </h3>
               <p className="solved-body">
-                You connected all {puzzle?.anchorPlayers.length ?? 0} given players in one chain.
+                {practiceMode
+                  ? `Nice - you connected all ${puzzle?.anchorPlayers.length ?? 0} given players again, but this was just a practice round. Today's official result is already locked in.`
+                  : `You connected all ${puzzle?.anchorPlayers.length ?? 0} given players in one chain.`}
               </p>
               <p className="solved-score">
                 {result?.chainLength && puzzle?.optimalLength ? (
@@ -807,8 +988,28 @@ export default function HomePage() {
               </button>
               {result?.chainLength ? <p className="solved-length">Chain length score: {result.chainLength}</p> : null}
             </div>
+          ) : failed ? (
+            <div className="failed-panel">
+              <h3 className="failed-title">
+                <XCircle size={22} weight="fill" />
+                Out of points
+              </h3>
+              <p className="failed-body">
+                {practiceMode
+                  ? "Your score hit 0 again on this practice round - it doesn't count. Today's official result stays as it was."
+                  : "Your score hit 0, so the round is over. Today's result is now locked in as a loss, and your streak has been reset."}
+              </p>
+              <button type="button" onClick={resetPuzzle} className="btn btn-primary">
+                Try again for fun
+              </button>
+            </div>
           ) : (
             <form onSubmit={handleSubmit}>
+              {practiceMode ? (
+                <p className="hint practice-banner">
+                  Practice round - today&apos;s official result is already locked in and won&apos;t change, no matter how this goes.
+                </p>
+              ) : null}
               {steps.map((step, index) => {
                 const expectedType = index % 2 === 0 ? 'PLAYER' : 'CLUB';
                 // The first step must be one of the given anchor players; every
@@ -1115,6 +1316,32 @@ export default function HomePage() {
           gap: 12px;
         }
 
+        .duel-button {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          padding: 8px 14px;
+          border-radius: var(--radius-pill);
+          border: 1px solid var(--header-ring);
+          background: transparent;
+          color: var(--header-fg);
+          font-weight: 700;
+          font-size: 12px;
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+          text-decoration: none;
+          cursor: pointer;
+          transition: background 0.15s ease, transform 0.15s ease;
+        }
+
+        .duel-button:hover {
+          background: rgba(245, 247, 241, 0.1);
+        }
+
+        .duel-button:active {
+          transform: scale(0.96);
+        }
+
         .theme-toggle {
           display: flex;
           align-items: center;
@@ -1397,7 +1624,7 @@ export default function HomePage() {
 
         .stat-grid {
           display: grid;
-          grid-template-columns: repeat(4, 1fr);
+          grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
           gap: 12px;
           margin-bottom: 18px;
         }
@@ -1484,6 +1711,56 @@ export default function HomePage() {
           color: var(--accent-strong);
           font-weight: 700;
           font-family: var(--font-mono);
+        }
+
+        .failed-panel {
+          padding: 20px;
+          border-radius: 16px;
+          background: var(--invalid-bg);
+          border: 1px solid var(--invalid);
+          animation: rise 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        .failed-title {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          margin: 0 0 8px;
+          color: var(--invalid);
+          font-size: 20px;
+        }
+
+        .failed-body {
+          margin: 0 0 14px;
+          color: var(--ink);
+        }
+
+        .practice-banner {
+          margin-bottom: 12px;
+          padding: 10px 12px;
+          border-radius: 10px;
+          background: var(--surface-muted);
+          border: 1px solid var(--border);
+        }
+
+        .rules-details {
+          margin-top: 14px;
+          font-size: 13px;
+          color: var(--ink-muted);
+        }
+
+        .rules-details summary {
+          cursor: pointer;
+          color: var(--ink);
+          font-weight: 600;
+        }
+
+        .rules-list {
+          margin: 8px 0 0;
+          padding-left: 18px;
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
         }
 
         .step-block {
@@ -1682,6 +1959,7 @@ export default function HomePage() {
         @media (prefers-reduced-motion: reduce) {
           .step-row--shake,
           .solved-panel,
+          .failed-panel,
           .btn,
           .theme-toggle {
             animation: none !important;

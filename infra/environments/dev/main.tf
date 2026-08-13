@@ -1,50 +1,36 @@
-module "network" {
-  source = "../../modules/network"
-
-  project                  = var.project
-  environment              = var.environment
-  vpc_cidr                 = var.vpc_cidr
-  availability_zones       = var.availability_zones
-  public_subnet_cidrs      = var.public_subnet_cidrs
-  private_app_subnet_cidrs = var.private_app_subnet_cidrs
-  private_db_subnet_cidrs  = var.private_db_subnet_cidrs
-  enable_nat_gateway       = var.enable_nat_gateway
-}
-
-module "security" {
-  source = "../../modules/security"
-
-  project     = var.project
-  environment = var.environment
-  vpc_id      = module.network.vpc_id
-}
-
-module "rds" {
-  source = "../../modules/rds_postgres"
-
-  project                 = var.project
-  environment             = var.environment
-  db_name                 = var.db_name
-  db_username             = var.db_username
-  db_password             = var.db_password
-  db_instance_class       = var.db_instance_class
-  allocated_storage       = var.db_allocated_storage
-  backup_retention_period = var.db_backup_retention_days
-  deletion_protection     = var.db_deletion_protection
-  private_db_subnet_ids   = module.network.private_db_subnet_ids
-  rds_security_group_id   = module.security.rds_security_group_id
-}
-
 locals {
-  # Both modules below derive the same Lambda function names from project/environment, so
-  # they're computed here rather than threaded through module outputs - that keeps
-  # observability (which needs the names for its alarms) from having to depend on lambda_app
-  # / ops_lambda (which each need observability's log groups to exist first). See the
-  # comments on those module blocks below for the resulting dependency order.
   lambda_function_name     = "${var.project}-${var.environment}-app"
   ops_lambda_function_name = "${var.project}-${var.environment}-ops"
   open_next_output_root    = "${path.root}/../../../.open-next"
   ops_lambda_build_path    = "${path.root}/../../../dist"
+}
+
+# Dev's Postgres is Neon (https://neon.tech), not RDS - this AWS account doesn't qualify for
+# AWS RDS Free Tier (tied to the account's age, not RDS usage), and Neon's free tier costs
+# nothing indefinitely while comfortably covering this app's actual data size (~23MB against a
+# 500MB limit, checked directly). This is why dev has no network/security/rds modules at all:
+# nothing here needs a VPC once the database isn't RDS - see infra/modules/lambda_app and
+# ops_lambda's `use_vpc`/`use_external_database_url` locals, which fall back to no VPC
+# attachment whenever there's no RDS-shaped db_secret_arn/db_endpoint supplied.
+#
+# One-time manual setup (can't be scripted from here - needs your own Neon account):
+#   1. Create a free project at neon.tech (no card required).
+#   2. From the dashboard, copy the *pooled* connection string, not the direct one - Lambda
+#      opens a fresh connection per invocation, so it needs Neon's PgBouncer-backed pooled
+#      endpoint or it'll exhaust Postgres' connection limit under any real concurrency.
+#   3. Run `DATABASE_URL="<pooled connection string>" npm run db:migrate` (then `db:seed` and
+#      `db:import-transfermarkt`) once from your machine, so dev starts populated rather than
+#      empty.
+#   4. Supply that same string as `neon_database_url` via terraform.tfvars (gitignored - see
+#      terraform.tfvars.example) or a TF_VAR_neon_database_url env var. Never commit the real
+#      value.
+resource "aws_secretsmanager_secret" "neon_db" {
+  name = "${var.project}-${var.environment}/neon-database-url"
+}
+
+resource "aws_secretsmanager_secret_version" "neon_db" {
+  secret_id     = aws_secretsmanager_secret.neon_db.id
+  secret_string = var.neon_database_url
 }
 
 module "observability" {
@@ -56,23 +42,20 @@ module "observability" {
   alarm_email              = var.alarm_email
   lambda_function_name     = local.lambda_function_name
   ops_lambda_function_name = local.ops_lambda_function_name
-  db_instance_id           = module.rds.db_instance_id
+  # Neon has no AWS/RDS CloudWatch metrics to alarm on - see infra/modules/observability.
+  enable_rds_alarms = false
 }
 
 module "lambda_app" {
   source = "../../modules/lambda_app"
 
-  project                  = var.project
-  environment              = var.environment
-  open_next_output_path    = "${local.open_next_output_root}/server-functions/default"
-  private_app_subnet_ids   = module.network.private_app_subnet_ids
-  lambda_security_group_id = module.security.lambda_security_group_id
-  db_secret_arn            = module.rds.secret_arn
-  db_endpoint              = module.rds.endpoint
-  db_name                  = var.db_name
-  log_group_name           = module.observability.log_group_name
-  memory_size              = var.lambda_memory_size
-  timeout                  = var.lambda_timeout
+  project                          = var.project
+  environment                      = var.environment
+  open_next_output_path            = "${local.open_next_output_root}/server-functions/default"
+  external_database_url_secret_arn = aws_secretsmanager_secret.neon_db.arn
+  log_group_name                   = module.observability.log_group_name
+  memory_size                      = var.lambda_memory_size
+  timeout                          = var.lambda_timeout
 
   # Ensures the CloudWatch log group (created by observability, with retention set) exists
   # before the function does, so Lambda doesn't auto-create a conflicting default one.
@@ -92,15 +75,11 @@ module "cloudfront" {
 module "ops_lambda" {
   source = "../../modules/ops_lambda"
 
-  project                  = var.project
-  environment              = var.environment
-  ops_lambda_build_path    = local.ops_lambda_build_path
-  private_app_subnet_ids   = module.network.private_app_subnet_ids
-  lambda_security_group_id = module.security.lambda_security_group_id
-  db_secret_arn            = module.rds.secret_arn
-  db_endpoint              = module.rds.endpoint
-  db_name                  = var.db_name
-  log_group_name           = module.observability.ops_log_group_name
+  project                          = var.project
+  environment                      = var.environment
+  ops_lambda_build_path            = local.ops_lambda_build_path
+  external_database_url_secret_arn = aws_secretsmanager_secret.neon_db.arn
+  log_group_name                   = module.observability.ops_log_group_name
 
   # Same reasoning as lambda_app's depends_on: the CloudWatch log group needs to exist
   # (with retention set) before the function does.

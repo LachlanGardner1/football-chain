@@ -87,6 +87,7 @@ resource "aws_cloudwatch_metric_alarm" "ops_lambda_errors" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "rds_cpu" {
+  count               = var.enable_rds_alarms ? 1 : 0
   alarm_name          = "${local.name_prefix}-rds-cpu"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = 3
@@ -107,6 +108,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_cpu" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "rds_storage" {
+  count               = var.enable_rds_alarms ? 1 : 0
   alarm_name          = "${local.name_prefix}-rds-free-storage"
   comparison_operator = "LessThanThreshold"
   evaluation_periods  = 1

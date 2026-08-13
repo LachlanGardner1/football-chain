@@ -1,5 +1,7 @@
 locals {
-  name_prefix = "${var.project}-${var.environment}"
+  name_prefix               = "${var.project}-${var.environment}"
+  use_vpc                   = length(var.private_app_subnet_ids) > 0
+  use_external_database_url = var.external_database_url_secret_arn != null
 }
 
 data "archive_file" "server" {
@@ -8,13 +10,25 @@ data "archive_file" "server" {
   output_path = "${path.module}/.build/${local.name_prefix}-server.zip"
 }
 
+# Exactly one of these two data sources is ever read (see local.use_external_database_url) -
+# either an RDS-shaped username/password/dbname JSON secret, or a single secret already holding
+# a complete connection string for an externally-hosted database (e.g. Neon).
 data "aws_secretsmanager_secret_version" "db" {
+  count     = local.use_external_database_url ? 0 : 1
   secret_id = var.db_secret_arn
 }
 
+data "aws_secretsmanager_secret_version" "external_database_url" {
+  count     = local.use_external_database_url ? 1 : 0
+  secret_id = var.external_database_url_secret_arn
+}
+
 locals {
-  db_credentials = jsondecode(data.aws_secretsmanager_secret_version.db.secret_string)
-  database_url   = "postgres://${local.db_credentials.username}:${local.db_credentials.password}@${var.db_endpoint}:5432/${var.db_name}"
+  database_url = local.use_external_database_url ? (
+    data.aws_secretsmanager_secret_version.external_database_url[0].secret_string
+    ) : (
+    "postgres://${jsondecode(data.aws_secretsmanager_secret_version.db[0].secret_string).username}:${jsondecode(data.aws_secretsmanager_secret_version.db[0].secret_string).password}@${var.db_endpoint}:5432/${var.db_name}"
+  )
 }
 
 # Generated once and stored centrally rather than passed through tfvars, so it never
@@ -53,7 +67,10 @@ resource "aws_iam_role_policy_attachment" "basic_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+# Only needed when the Lambda is actually placed in a VPC - a non-VPC Lambda has no ENIs to
+# manage and doesn't need this policy at all.
 resource "aws_iam_role_policy_attachment" "vpc_access" {
+  count      = local.use_vpc ? 1 : 0
   role       = aws_iam_role.lambda_exec.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
 }
@@ -76,9 +93,12 @@ resource "aws_lambda_function" "server" {
   memory_size = var.memory_size
   timeout     = var.timeout
 
-  vpc_config {
-    subnet_ids         = var.private_app_subnet_ids
-    security_group_ids = [var.lambda_security_group_id]
+  dynamic "vpc_config" {
+    for_each = local.use_vpc ? [1] : []
+    content {
+      subnet_ids         = var.private_app_subnet_ids
+      security_group_ids = [var.lambda_security_group_id]
+    }
   }
 
   environment {
