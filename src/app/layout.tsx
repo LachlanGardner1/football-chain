@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { JetBrains_Mono, Space_Grotesk } from 'next/font/google';
 import React from 'react';
 
+import './globals.css';
 import { THEME_STORAGE_KEY } from './theme';
 
 // Runs before hydration so the stored theme applies before first paint, avoiding a flash

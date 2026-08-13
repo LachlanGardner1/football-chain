@@ -11,4 +11,8 @@ export class DailyPuzzleService {
   async getPublishedDates(): Promise<{ dates: string[]; today: string }> {
     return this.dailyPuzzleRepo.getPublishedDates();
   }
+
+  async getAnchorPlayers(puzzleId: number): Promise<Array<{ id: number; name: string }>> {
+    return this.dailyPuzzleRepo.getAnchorPlayers(puzzleId);
+  }
 }

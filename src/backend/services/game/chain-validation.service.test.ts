@@ -25,6 +25,10 @@ class StubGraphService implements GraphService {
   async shortestPathPlayerToPlayer(): Promise<null> {
     return null;
   }
+
+  async shortestPathAvoiding(): Promise<null> {
+    return null;
+  }
 }
 
 test('rejects an empty chain', async () => {

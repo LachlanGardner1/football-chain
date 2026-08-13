@@ -1,14 +1,16 @@
 locals {
-  name_prefix = "${var.project}-${var.environment}"
+  name_prefix               = "${var.project}-${var.environment}"
+  use_vpc                   = length(var.private_app_subnet_ids) > 0
+  use_external_database_url = var.external_database_url_secret_arn != null
 }
 
 # Runs the "migrate" and "rotate-puzzles" actions (scripts/ops-lambda/handler.ts). Both are
 # invoked directly by GitHub Actions (deploy.yml / rotate-puzzles.yml) via `aws lambda
 # invoke`, not on any AWS-native schedule - GitHub Actions is the sole scheduling source of
-# truth so there's one place to see, change, and rerun cron history instead of two. VPC-
-# attached with the same private-RDS-access pattern as lambda_app, since RDS only accepts
-# connections from inside the VPC and this Lambda is the only other thing that needs to
-# reach it (migrations, puzzle generation).
+# truth so there's one place to see, change, and rerun cron history instead of two. VPC
+# attachment (see local.use_vpc) is only needed when the database is RDS, reachable solely
+# from inside the VPC - an externally-hosted database over the public internet (e.g. Neon)
+# needs neither the VPC nor the private-subnet routing this Lambda would otherwise use.
 data "archive_file" "ops" {
   type        = "zip"
   source_dir  = var.ops_lambda_build_path
@@ -16,12 +18,21 @@ data "archive_file" "ops" {
 }
 
 data "aws_secretsmanager_secret_version" "db" {
+  count     = local.use_external_database_url ? 0 : 1
   secret_id = var.db_secret_arn
 }
 
+data "aws_secretsmanager_secret_version" "external_database_url" {
+  count     = local.use_external_database_url ? 1 : 0
+  secret_id = var.external_database_url_secret_arn
+}
+
 locals {
-  db_credentials = jsondecode(data.aws_secretsmanager_secret_version.db.secret_string)
-  database_url   = "postgres://${local.db_credentials.username}:${local.db_credentials.password}@${var.db_endpoint}:5432/${var.db_name}"
+  database_url = local.use_external_database_url ? (
+    data.aws_secretsmanager_secret_version.external_database_url[0].secret_string
+    ) : (
+    "postgres://${jsondecode(data.aws_secretsmanager_secret_version.db[0].secret_string).username}:${jsondecode(data.aws_secretsmanager_secret_version.db[0].secret_string).password}@${var.db_endpoint}:5432/${var.db_name}"
+  )
 }
 
 resource "aws_iam_role" "ops_lambda_exec" {
@@ -45,6 +56,7 @@ resource "aws_iam_role_policy_attachment" "ops_basic_execution" {
 }
 
 resource "aws_iam_role_policy_attachment" "ops_vpc_access" {
+  count      = local.use_vpc ? 1 : 0
   role       = aws_iam_role.ops_lambda_exec.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
 }
@@ -62,9 +74,12 @@ resource "aws_lambda_function" "ops" {
   memory_size = var.memory_size
   timeout     = var.timeout
 
-  vpc_config {
-    subnet_ids         = var.private_app_subnet_ids
-    security_group_ids = [var.lambda_security_group_id]
+  dynamic "vpc_config" {
+    for_each = local.use_vpc ? [1] : []
+    content {
+      subnet_ids         = var.private_app_subnet_ids
+      security_group_ids = [var.lambda_security_group_id]
+    }
   }
 
   environment {

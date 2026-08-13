@@ -1,7 +1,14 @@
+// The two hint buttons cost different amounts (see src/backend/services/hints/hint.service.ts,
+// which mirrors these same two numbers), so calculatePuzzleScore takes a single precomputed
+// hintPenalty total rather than a flat rate * a count.
+export const ANCHOR_CLUB_HINT_PENALTY_POINTS = 50;
+export const NEXT_STEPS_HINT_PENALTY_POINTS = 150;
+
 export interface PuzzleScoreBreakdown {
   score: number;
   efficiencyBonus: number;
   invalidPenalty: number;
+  hintPenalty: number;
   completionBonus: number;
 }
 
@@ -9,14 +16,16 @@ export interface PuzzleScoreInput {
   chainLength: number;
   optimalLength: number;
   invalidSubmissions: number;
+  hintPenalty?: number;
   solved: boolean;
 }
 
 export function calculatePuzzleScore(input: PuzzleScoreInput): PuzzleScoreBreakdown {
   const baseScore = 1000;
   const invalidPenalty = input.invalidSubmissions * 150;
+  const hintPenalty = input.hintPenalty ?? 0;
 
-  const liveScore = Math.max(0, baseScore - invalidPenalty);
+  const liveScore = Math.max(0, baseScore - invalidPenalty - hintPenalty);
 
   const optimalRouteBonus = input.solved && input.chainLength === input.optimalLength ? 250 : 0;
   const zeroInvalidBonus = input.solved && input.invalidSubmissions === 0 ? 150 : 0;
@@ -30,6 +39,7 @@ export function calculatePuzzleScore(input: PuzzleScoreInput): PuzzleScoreBreakd
     chainLength: input.chainLength,
     optimalLength: input.optimalLength,
     invalidSubmissions: input.invalidSubmissions,
+    hintPenalty,
     solved: input.solved,
     liveScore,
     optimalRouteBonus,
@@ -42,6 +52,7 @@ export function calculatePuzzleScore(input: PuzzleScoreInput): PuzzleScoreBreakd
     score,
     efficiencyBonus: score,
     invalidPenalty,
+    hintPenalty,
     completionBonus,
   };
 }

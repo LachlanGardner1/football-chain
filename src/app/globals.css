@@ -1,0 +1,117 @@
+/* Shared design tokens + base reset, available to every route (imported once in layout.tsx).
+   src/app/page.tsx (daily mode) keeps its own copy of this same :root block inside a
+   component-local `<style jsx global>` - harmless duplication (identical values, last one
+   applied wins, no conflict) rather than a risky refactor of an already-working page. New
+   pages outside page.tsx's component tree (e.g. src/app/speed/*) need this file since
+   component-scoped `<style jsx global>` blocks don't reach routes outside that component. */
+
+:root {
+  color-scheme: dark;
+  --font-display: var(--font-display), 'Segoe UI', sans-serif;
+  --font-mono: var(--font-mono), 'SFMono-Regular', monospace;
+
+  --bg: #0b120d;
+  --surface: #121b15;
+  --surface-muted: #17221a;
+  --border: #223026;
+  --ink: #ecf3ee;
+  --ink-muted: #9dafa3;
+  --accent: #34c77b;
+  --accent-strong: #57da95;
+  --accent-soft: rgba(52, 199, 123, 0.14);
+  --accent-soft-border: rgba(52, 199, 123, 0.32);
+
+  --valid: #34c77b;
+  --valid-bg: rgba(52, 199, 123, 0.14);
+  --invalid: #f0645c;
+  --invalid-bg: rgba(240, 100, 92, 0.14);
+  --repeat: #e7b23a;
+  --repeat-bg: rgba(231, 178, 58, 0.14);
+
+  --gold: #e7b23a;
+  --gold-soft: rgba(231, 178, 58, 0.16);
+
+  --header-bg: #11201a;
+  --header-fg: #f5f7f1;
+  --header-ring: rgba(245, 247, 241, 0.08);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 18px 36px rgba(0, 0, 0, 0.5);
+  --radius-panel: 20px;
+  --radius-input: 12px;
+  --radius-pill: 999px;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg: #f5f7f1;
+  --surface: #ffffff;
+  --surface-muted: #eef2e9;
+  --border: #dde4d6;
+  --ink: #11201a;
+  --ink-muted: #5b6b60;
+  --accent: #1f7a4c;
+  --accent-strong: #155c39;
+  --accent-soft: rgba(31, 122, 76, 0.1);
+  --accent-soft-border: rgba(31, 122, 76, 0.28);
+
+  --valid: #1f9d55;
+  --valid-bg: #e8f6ec;
+  --invalid: #c7433b;
+  --invalid-bg: #fcecea;
+  --repeat: #b5790e;
+  --repeat-bg: #fbf0db;
+
+  --gold: #b1860f;
+  --gold-soft: rgba(199, 154, 42, 0.14);
+
+  --shadow-sm: 0 1px 2px rgba(17, 32, 26, 0.07);
+  --shadow-md: 0 14px 30px rgba(17, 32, 26, 0.1);
+}
+
+:root[data-theme='dark'] {
+  --bg: #0b120d;
+  --surface: #121b15;
+  --surface-muted: #17221a;
+  --border: #223026;
+  --ink: #ecf3ee;
+  --ink-muted: #9dafa3;
+  --accent: #34c77b;
+  --accent-strong: #57da95;
+  --accent-soft: rgba(52, 199, 123, 0.14);
+  --accent-soft-border: rgba(52, 199, 123, 0.32);
+
+  --valid: #34c77b;
+  --valid-bg: rgba(52, 199, 123, 0.14);
+  --invalid: #f0645c;
+  --invalid-bg: rgba(240, 100, 92, 0.14);
+  --repeat: #e7b23a;
+  --repeat-bg: rgba(231, 178, 58, 0.14);
+
+  --gold: #e7b23a;
+  --gold-soft: rgba(231, 178, 58, 0.16);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 18px 36px rgba(0, 0, 0, 0.5);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-display);
+  background: var(--bg);
+  color: var(--ink);
+}
+
+button,
+input {
+  font-family: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
