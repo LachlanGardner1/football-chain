@@ -28,6 +28,7 @@ import {
   type PuzzleScoreBreakdown,
 } from './scoring';
 import { isTheme, THEME_STORAGE_KEY, type Theme } from './theme';
+import { apiFetch } from './api-fetch';
 
 type Puzzle = {
   puzzleId: number;
@@ -189,14 +190,14 @@ export default function HomePage() {
   );
 
   function fetchServerStats() {
-    fetch('/api/me/stats')
+    apiFetch('/api/me/stats')
       .then((res) => res.json())
       .then((data: ServerStats) => setServerStats(data))
       .catch(() => undefined);
   }
 
   function fetchAvailableDates() {
-    fetch('/api/daily/dates')
+    apiFetch('/api/daily/dates')
       .then((res) => res.json())
       .then((data: AvailableDates) => setAvailableDates(data))
       .catch(() => undefined);
@@ -208,7 +209,7 @@ export default function HomePage() {
   // inside loadPuzzle's callback, before the just-set puzzle state has actually re-rendered -
   // going through updateScore's `puzzle` closure here would silently no-op on a stale null.
   function fetchHintState(puzzleId: number, optimalLength: number | undefined) {
-    fetch(`/api/hint?puzzleId=${puzzleId}`)
+    apiFetch(`/api/hint?puzzleId=${puzzleId}`)
       .then((res) => res.json())
       .then((data: HintStateResponse) => {
         const revealed: Record<number, string[]> = {};
@@ -237,7 +238,7 @@ export default function HomePage() {
   // Hydrates whatever outcome is already locked in for this puzzle (e.g. after a refresh, or
   // returning to a puzzle already played earlier today) - drives the "already played" summary.
   function fetchPuzzleOutcome(puzzleId: number) {
-    fetch(`/api/complete?puzzleId=${puzzleId}`)
+    apiFetch(`/api/complete?puzzleId=${puzzleId}`)
       .then((res) => res.json())
       .then((data: PuzzleOutcome) => setLockedOutcome(data))
       .catch(() => undefined);
@@ -252,7 +253,7 @@ export default function HomePage() {
     setError(null);
     fetchServerStats();
 
-    Promise.all([fetch(`/api/daily?date=${encodeURIComponent(date)}`).then((res) => res.json()), fetch('/api/catalog').then((res) => res.json())])
+    Promise.all([apiFetch(`/api/daily?date=${encodeURIComponent(date)}`).then((res) => res.json()), apiFetch('/api/catalog').then((res) => res.json())])
       .then(([puzzleData, catalogData]) => {
         if (puzzleData.error) {
           setError(puzzleData.error);
@@ -344,7 +345,7 @@ export default function HomePage() {
     if (!puzzle || failed || solved) return;
     setFailed(true);
 
-    fetch('/api/complete', {
+    apiFetch('/api/complete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -441,7 +442,7 @@ export default function HomePage() {
     setResult(null);
 
     try {
-      const response = await fetch('/api/validate-chain', {
+      const response = await apiFetch('/api/validate-chain', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -486,7 +487,7 @@ export default function HomePage() {
           });
           setSolved(true);
 
-          fetch('/api/complete', {
+          apiFetch('/api/complete', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -599,7 +600,7 @@ export default function HomePage() {
     setAnchorHintLoading((current) => ({ ...current, [anchorPlayerId]: true }));
 
     try {
-      const response = await fetch('/api/hint', {
+      const response = await apiFetch('/api/hint', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -638,7 +639,7 @@ export default function HomePage() {
     setNextStepsMessage(null);
 
     try {
-      const response = await fetch('/api/hint', {
+      const response = await apiFetch('/api/hint', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'reveal-next-steps', puzzleId: puzzle.puzzleId, chain: confirmedChainForHints() }),

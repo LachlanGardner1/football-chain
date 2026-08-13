@@ -7,6 +7,7 @@ import { CheckCircle, Flag, House, Moon, Sun, Trophy, XCircle } from '@phosphor-
 
 import { foldAccents, getVisibleCatalogEntries } from '../../puzzle-suggestions';
 import { isTheme, THEME_STORAGE_KEY, type Theme } from '../../theme';
+import { apiFetch } from '../../api-fetch';
 
 type CatalogEntry = { id: number; name: string };
 type ChainNode = { id: number | null; type: 'PLAYER' | 'CLUB' };
@@ -88,7 +89,7 @@ export default function SpeedRoundMatchPage() {
   }
 
   useEffect(() => {
-    fetch('/api/catalog')
+    apiFetch('/api/catalog')
       .then((res) => res.json())
       .then(setCatalog)
       .catch(() => undefined);
@@ -101,7 +102,7 @@ export default function SpeedRoundMatchPage() {
     if (!inviteCode) return;
     let cancelled = false;
 
-    fetch('/api/speed-round/join', {
+    apiFetch('/api/speed-round/join', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ inviteCode }),
@@ -134,7 +135,7 @@ export default function SpeedRoundMatchPage() {
 
     async function tick() {
       try {
-        const response = await fetch(`/api/speed-round/${matchId}/state`);
+        const response = await apiFetch(`/api/speed-round/${matchId}/state`);
         if (response.ok) {
           const data = (await response.json()) as MatchState;
           if (!cancelled) {
@@ -227,7 +228,7 @@ export default function SpeedRoundMatchPage() {
     setSubmitting(true);
     setSubmitError(null);
     try {
-      const response = await fetch(`/api/speed-round/${matchId}/submit`, {
+      const response = await apiFetch(`/api/speed-round/${matchId}/submit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ chain: chainToValidate }),
@@ -249,7 +250,7 @@ export default function SpeedRoundMatchPage() {
       // Solving is exactly when the match state (winner, your own finished time) changes -
       // refresh immediately rather than waiting up to ~1.2s for the next scheduled poll.
       if (data.solved) {
-        const stateResponse = await fetch(`/api/speed-round/${matchId}/state`);
+        const stateResponse = await apiFetch(`/api/speed-round/${matchId}/state`);
         if (stateResponse.ok) {
           setMatchState((await stateResponse.json()) as MatchState);
         }
@@ -272,8 +273,8 @@ export default function SpeedRoundMatchPage() {
     if (matchId === null) return;
     setReadySubmitting(true);
     try {
-      await fetch(`/api/speed-round/${matchId}/ready`, { method: 'POST' });
-      const response = await fetch(`/api/speed-round/${matchId}/state`);
+      await apiFetch(`/api/speed-round/${matchId}/ready`, { method: 'POST' });
+      const response = await apiFetch(`/api/speed-round/${matchId}/state`);
       if (response.ok) setMatchState((await response.json()) as MatchState);
     } finally {
       setReadySubmitting(false);

@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { Flag, House, Moon, SoccerBall, Sun } from '@phosphor-icons/react';
 
 import { isTheme, THEME_STORAGE_KEY, type Theme } from '../theme';
+import { apiFetch } from '../api-fetch';
 
 type CreateResponse = { matchId: number; inviteCode: string };
 
@@ -37,7 +38,7 @@ export default function SpeedRoundHomePage() {
     setCreating(true);
     setError(null);
     try {
-      const response = await fetch('/api/speed-round/create', { method: 'POST' });
+      const response = await apiFetch('/api/speed-round/create', { method: 'POST' });
       if (!response.ok) throw new Error('Unable to create a race right now.');
       const data = (await response.json()) as CreateResponse;
       // The invite code, not the numeric matchId - that's the shareable/unguessable part of
