@@ -28,7 +28,15 @@ resource "aws_iam_openid_connect_provider" "github" {
 }
 
 locals {
-  repo_sub = "repo:${var.github_owner}/${var.github_repo}:ref:refs/heads/main"
+  # GitHub issues a different "sub" claim shape depending on whether the calling job declares
+  # a `environment:` - a job with one gets `repo:{owner}/{repo}:environment:{name}`, not the
+  # `ref:refs/heads/{branch}` form. deploy.yml's job always sets `environment: dev|prod`, so it
+  # needs the environment-scoped form for both environments; rotate-puzzles.yml's job sets no
+  # environment at all, so it needs the ref-scoped form instead. invoke_ops_lambda is shared by
+  # both workflows, so its condition has to accept all three.
+  repo_sub_ref              = "repo:${var.github_owner}/${var.github_repo}:ref:refs/heads/main"
+  repo_sub_environment_dev  = "repo:${var.github_owner}/${var.github_repo}:environment:dev"
+  repo_sub_environment_prod = "repo:${var.github_owner}/${var.github_repo}:environment:prod"
 }
 
 # --- Deploy role: terraform apply + the deploy-time "migrate" invoke -----------------------
@@ -47,7 +55,10 @@ resource "aws_iam_role" "deploy" {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         }
         StringLike = {
-          "token.actions.githubusercontent.com:sub" = local.repo_sub
+          "token.actions.githubusercontent.com:sub" = [
+            local.repo_sub_environment_dev,
+            local.repo_sub_environment_prod,
+          ]
         }
       }
     }]
@@ -111,7 +122,11 @@ resource "aws_iam_role" "invoke_ops_lambda" {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         }
         StringLike = {
-          "token.actions.githubusercontent.com:sub" = local.repo_sub
+          "token.actions.githubusercontent.com:sub" = [
+            local.repo_sub_ref,
+            local.repo_sub_environment_dev,
+            local.repo_sub_environment_prod,
+          ]
         }
       }
     }]
