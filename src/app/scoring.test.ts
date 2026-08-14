@@ -48,6 +48,30 @@ test('does not deduct from the score for a longer-than-optimal chain', () => {
   assert.equal(result.score, 1000);
 });
 
+test('withholds the optimal-route bonus when the next-steps hint was used, even at optimal length', () => {
+  const result = calculatePuzzleScore({
+    chainLength: 3,
+    optimalLength: 3,
+    invalidSubmissions: 0,
+    solved: true,
+    usedNextStepsHint: true,
+  });
+
+  // 1000 base + 150 zero-invalid bonus, no 250 optimal-route bonus.
+  assert.equal(result.score, 1150);
+});
+
+test('still awards the optimal-route bonus when only usedNextStepsHint is left unset (falsy default)', () => {
+  const result = calculatePuzzleScore({
+    chainLength: 3,
+    optimalLength: 3,
+    invalidSubmissions: 0,
+    solved: true,
+  });
+
+  assert.equal(result.score, 1400);
+});
+
 test('withholds the optimal-route bonus when the solve is longer than optimal but still awards the zero-invalid bonus', () => {
   const result = calculatePuzzleScore({
     chainLength: 5,

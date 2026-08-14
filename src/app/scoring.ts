@@ -18,6 +18,11 @@ export interface PuzzleScoreInput {
   invalidSubmissions: number;
   hintPenalty?: number;
   solved: boolean;
+  // "Reveal next steps" hands you a concrete step toward the shortest route, so a chain that
+  // only matches the optimal length because of that guidance isn't really a *perfect* chain -
+  // revealing a club's identity (the other hint) doesn't affect routing the same way, so only
+  // this one disqualifies the bonus.
+  usedNextStepsHint?: boolean;
 }
 
 export function calculatePuzzleScore(input: PuzzleScoreInput): PuzzleScoreBreakdown {
@@ -27,7 +32,8 @@ export function calculatePuzzleScore(input: PuzzleScoreInput): PuzzleScoreBreakd
 
   const liveScore = Math.max(0, baseScore - invalidPenalty - hintPenalty);
 
-  const optimalRouteBonus = input.solved && input.chainLength === input.optimalLength ? 250 : 0;
+  const optimalRouteBonus =
+    input.solved && input.chainLength === input.optimalLength && !input.usedNextStepsHint ? 250 : 0;
   const zeroInvalidBonus = input.solved && input.invalidSubmissions === 0 ? 150 : 0;
   const completionBonus = optimalRouteBonus + zeroInvalidBonus;
 

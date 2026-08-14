@@ -181,6 +181,12 @@ export default function HomePage() {
   // even though the underlying hint records are still shared.
   const rawHintPenaltyRef = useRef(0);
   const hintPenaltyBaselineRef = useRef(0);
+  // Disqualifies the optimal-route ("perfect chain") bonus once "reveal next steps" has
+  // actually handed out a real step this attempt - see scoring.ts's usedNextStepsHint. Hydrated
+  // from the server's nextStepHintsUsed count on load (so a mid-attempt refresh doesn't
+  // spuriously re-qualify), and re-baselined to false on a fresh practice round alongside the
+  // other hint-display state, matching the existing "practice round starts clean" pattern.
+  const usedNextStepsHintRef = useRef(false);
 
   function applyServerHintPenalty(rawTotal: number) {
     rawHintPenaltyRef.current = rawTotal;
@@ -236,6 +242,7 @@ export default function HomePage() {
         setRevealedAnchorClubHints(revealed);
         applyServerHintPenalty(data.hintPenalty);
         const effectiveHintPenalty = Math.max(0, data.hintPenalty - hintPenaltyBaselineRef.current);
+        usedNextStepsHintRef.current = data.nextStepHintsUsed > 0;
         // A fresh page load always starts with an empty confirmed chain, but hints spent in
         // an earlier visit are still real - without this, the score display would
         // misleadingly show 1000 until the next submission.
@@ -246,6 +253,7 @@ export default function HomePage() {
             invalidSubmissions: 0,
             hintPenalty: effectiveHintPenalty,
             solved: false,
+            usedNextStepsHint: usedNextStepsHintRef.current,
           }),
         );
       })
@@ -302,6 +310,7 @@ export default function HomePage() {
         setNextStepsMessage(null);
         rawHintPenaltyRef.current = 0;
         hintPenaltyBaselineRef.current = 0;
+        usedNextStepsHintRef.current = false;
         setHintPenalty(0);
         setRevealedAnchorClubHints({});
         setExhaustedAnchors(new Set());
@@ -391,6 +400,7 @@ export default function HomePage() {
       invalidSubmissions: nextInvalidSubmissions,
       hintPenalty: nextHintPenalty,
       solved,
+      usedNextStepsHint: usedNextStepsHintRef.current,
     });
 
     logDebug('Score update', {
@@ -588,6 +598,7 @@ export default function HomePage() {
       // clean and shows the player what they could still achieve.
       hintPenaltyBaselineRef.current = rawHintPenaltyRef.current;
       hintPenaltyForDisplay = 0;
+      usedNextStepsHintRef.current = false;
       setHintPenalty(0);
       setRevealedAnchorClubHints({});
       setExhaustedAnchors(new Set());
@@ -603,6 +614,7 @@ export default function HomePage() {
         invalidSubmissions: 0,
         hintPenalty: hintPenaltyForDisplay,
         solved: false,
+        usedNextStepsHint: usedNextStepsHintRef.current,
       }),
     );
   }
@@ -669,6 +681,7 @@ export default function HomePage() {
       const effectiveHintPenalty = Math.max(0, data.hintPenalty - hintPenaltyBaselineRef.current);
 
       if (data.kind === 'STEPS_REVEALED') {
+        usedNextStepsHintRef.current = true;
         setNextStepsReveal({ fromLabel: data.fromLabel, steps: data.steps.map((step) => ({ label: step.label, type: step.type })) });
       } else {
         setNextStepsReveal(null);
@@ -733,6 +746,10 @@ export default function HomePage() {
             </div>
           </div>
           <div className="header-actions">
+            <Link href="/leaderboard" className="duel-button" title="See daily high scores and duel rankings">
+              <Trophy size={16} weight="fill" />
+              Leaderboard
+            </Link>
             <Link href="/speed" className="duel-button" title="Race a friend 1v1 in real time">
               <Sword size={16} weight="fill" />
               Duel
@@ -769,6 +786,9 @@ export default function HomePage() {
               </div>
               <p className="hint" style={{ marginBottom: 0 }}>
                 Start and end on any two of these players. Include the rest somewhere in the chain, in any order.
+                Build the chain by submitting a player, then a club they played for, then another player from that
+                club, and so on - alternating player and club - until you&apos;ve linked every player above into one
+                continuous sequence.
               </p>
 
               <div className="field-row">
@@ -801,6 +821,12 @@ export default function HomePage() {
                   <li>Wrong or repeated links cost 150 points each.</li>
                   <li>
                     Hints cost points too: revealing a club is -{ANCHOR_CLUB_HINT_PENALTY_POINTS}, revealing the next steps is -{NEXT_STEPS_HINT_PENALTY_POINTS}.
+                  </li>
+                  <li>Solve with zero wrong or repeated links for a +150 bonus.</li>
+                  <li>
+                    Solve using the shortest possible chain for a +250 &quot;perfect chain&quot; bonus - but using
+                    &quot;Reveal next steps&quot; disqualifies you from this bonus, since it hands you the route
+                    instead of you finding it yourself.
                   </li>
                   <li>If your score hits 0, the round ends as a loss for today&apos;s puzzle - and it breaks your streak immediately.</li>
                   <li>Only your first result each day is official. After that, you can keep playing the same puzzle for fun without changing your score or streak.</li>
