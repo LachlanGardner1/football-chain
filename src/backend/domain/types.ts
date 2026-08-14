@@ -50,6 +50,7 @@ export interface UserStatsDTO {
   currentStreak: number;
   maxStreak: number;
   bestChainLength: number | null;
+  displayName: string | null;
 }
 
 // A puzzle's outcome locks in on the first time a player either solves it or runs their
@@ -114,4 +115,43 @@ export interface SpeedRoundMatchStateDTO {
   // went stale before finishing).
   winner: "you" | "opponent" | null;
   opponentForfeited: boolean;
+}
+
+// --- Leaderboard ---
+
+export interface DailyLeaderboardEntryDTO {
+  userId: string;
+  displayName: string | null;
+  solved: boolean;
+  chainLength: number | null;
+  score: number;
+}
+
+// locked=true means "this is today's leaderboard, but the viewer hasn't locked in their own
+// attempt yet" - entries is [] in that case (no spoilers). Historical dates are never locked.
+export interface DailyLeaderboardDTO {
+  date: string;
+  isToday: boolean;
+  locked: boolean;
+  viewerUserId: string;
+  entries: DailyLeaderboardEntryDTO[];
+}
+
+export interface DuelRankingEntryDTO {
+  userId: string;
+  displayName: string | null;
+  wins: number;
+  losses: number;
+  rating: number;
+}
+
+export interface DuelPlayerDetailDTO extends DuelRankingEntryDTO {
+  recentMatches: Array<{
+    matchId: number;
+    opponentUserId: string | null;
+    opponentDisplayName: string | null;
+    won: boolean;
+    forfeited: boolean;
+    finishedAt: string | null;
+  }>;
 }

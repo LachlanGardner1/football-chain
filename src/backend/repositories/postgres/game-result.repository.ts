@@ -132,6 +132,7 @@ export class PgGameResultRepository implements GameResultRepository {
       best_chain_length: number | null;
       current_streak: number | null;
       max_streak: number | null;
+      display_name: string | null;
     }>(
       `SELECT
          COUNT(*) FILTER (WHERE gr.solved = TRUE) AS solved_count,
@@ -144,12 +145,13 @@ export class PgGameResultRepository implements GameResultRepository {
            WHEN us.last_solved_date >= (now() AT TIME ZONE 'Australia/Sydney')::date - INTERVAL '1 day' THEN us.current_streak
            ELSE 0
          END AS current_streak,
-         us.max_streak
+         us.max_streak,
+         u.display_name
        FROM users u
        LEFT JOIN game_results gr ON gr.user_id = u.id
        LEFT JOIN user_streaks us ON us.user_id = u.id
        WHERE u.id = $1::uuid
-       GROUP BY us.current_streak, us.max_streak, us.last_solved_date`,
+       GROUP BY us.current_streak, us.max_streak, us.last_solved_date, u.display_name`,
       [userId],
     );
 
@@ -161,6 +163,7 @@ export class PgGameResultRepository implements GameResultRepository {
         currentStreak: 0,
         maxStreak: 0,
         bestChainLength: null,
+        displayName: null,
       };
     }
 
@@ -169,6 +172,7 @@ export class PgGameResultRepository implements GameResultRepository {
       currentStreak: Number(row.current_streak ?? 0),
       maxStreak: Number(row.max_streak ?? 0),
       bestChainLength: row.best_chain_length,
+      displayName: row.display_name,
     };
   }
 }

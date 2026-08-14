@@ -1,7 +1,10 @@
 import type {
   ChainNodeInput,
+  DailyLeaderboardDTO,
   DailyPuzzle,
   DailyPuzzleDTO,
+  DuelPlayerDetailDTO,
+  DuelRankingEntryDTO,
   PuzzleOutcomeDTO,
   SpeedRoundCreateResultDTO,
   SpeedRoundJoinResult,
@@ -112,4 +115,20 @@ export interface SpeedRoundRepository {
   // A losing player may still call this afterward purely to record their own chain/time for
   // the summary screen.
   recordFinish(params: { matchId: number; userId: string; chain: ChainNodeInput[] }): Promise<void>;
+}
+
+export interface LeaderboardRepository {
+  // requestedDate: raw client-supplied YYYY-MM-DD, or null meaning "today". "Today" and the
+  // lock check are both resolved against the DB's own (now() AT TIME ZONE 'Australia/Sydney')
+  // ::date, never a JS Date - see db/migrations/017's history for why trusting any server-local
+  // clock (or session-level timezone state) for "today" is exactly the bug class to avoid.
+  getDailyLeaderboard(requestedDate: string | null, viewerUserId: string): Promise<DailyLeaderboardDTO>;
+  getDuelRankings(): Promise<DuelRankingEntryDTO[]>;
+  getDuelPlayerDetail(userId: string): Promise<DuelPlayerDetailDTO | null>;
+}
+
+export interface UserRepository {
+  // Ensures a users row exists (same ensureUser-style upsert used by every other repository
+  // that needs one), then sets display_name. Caller (UserProfileService) validates trim/length.
+  setDisplayName(userId: string, displayName: string): Promise<void>;
 }

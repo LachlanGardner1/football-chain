@@ -29,6 +29,8 @@ import {
 } from './scoring';
 import { isTheme, THEME_STORAGE_KEY, type Theme } from './theme';
 import { apiFetch } from './api-fetch';
+import DisplayNameModal from './components/DisplayNameModal';
+import DailyLeaderboardPreview from './components/DailyLeaderboardPreview';
 
 type Puzzle = {
   puzzleId: number;
@@ -53,6 +55,7 @@ type ServerStats = {
   currentStreak: number;
   maxStreak: number;
   bestChainLength: number | null;
+  displayName: string | null;
 };
 
 type AvailableDates = {
@@ -140,6 +143,11 @@ export default function HomePage() {
   const [scoreBreakdown, setScoreBreakdown] = useState<PuzzleScoreBreakdown | null>(null);
   const [invalidSubmissions, setInvalidSubmissions] = useState(0);
   const [serverStats, setServerStats] = useState<ServerStats | null>(null);
+  const [showNameModal, setShowNameModal] = useState(false);
+  // Set right before either /api/complete POST call, consumed the next time fetchServerStats
+  // resolves - the trigger for "show the name-entry modal" needs to fire only immediately after
+  // a fresh lock-in, not on every routine stats refresh (e.g. the one on initial page load).
+  const justLockedInRef = useRef(false);
   // NOT new Date().toISOString().slice(0, 10) - toISOString() converts to UTC first, so for
   // anyone meaningfully ahead of UTC (e.g. AEST/AEDT, UTC+10/+11) this silently shows
   // yesterday's date for several hours after their own local midnight. Build the date from
@@ -192,7 +200,16 @@ export default function HomePage() {
   function fetchServerStats() {
     apiFetch('/api/me/stats')
       .then((res) => res.json())
-      .then((data: ServerStats) => setServerStats(data))
+      .then((data: ServerStats) => {
+        setServerStats(data);
+        if (justLockedInRef.current) {
+          justLockedInRef.current = false;
+          const dismissedKey = `fc_display_name_dismissed_${selectedDate}`;
+          if (!data.displayName && !window.sessionStorage.getItem(dismissedKey)) {
+            setShowNameModal(true);
+          }
+        }
+      })
       .catch(() => undefined);
   }
 
@@ -344,6 +361,7 @@ export default function HomePage() {
   function handleFailure(chainLengthAtFailure: number, score: number) {
     if (!puzzle || failed || solved) return;
     setFailed(true);
+    justLockedInRef.current = true;
 
     apiFetch('/api/complete', {
       method: 'POST',
@@ -486,6 +504,7 @@ export default function HomePage() {
             invalidSubmissions: invalidSubmissionCountRef.current,
           });
           setSolved(true);
+          justLockedInRef.current = true;
 
           apiFetch('/api/complete', {
             method: 'POST',
@@ -1113,6 +1132,10 @@ export default function HomePage() {
 
           {error ? <p className="error-text">{error}</p> : null}
         </section>
+
+        {lockedOutcome?.outcomeLocked && availableDates && selectedDate === availableDates.today ? (
+          <DailyLeaderboardPreview date={selectedDate} />
+        ) : null}
       </div>
 
       <style jsx global>{`
@@ -1974,6 +1997,27 @@ export default function HomePage() {
           }
         }
       `}</style>
+
+      <DisplayNameModal
+        open={showNameModal}
+        onDismiss={() => {
+          window.sessionStorage.setItem(`fc_display_name_dismissed_${selectedDate}`, '1');
+          setShowNameModal(false);
+        }}
+        onSubmit={async (name) => {
+          const response = await apiFetch('/api/me/display-name', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ displayName: name }),
+          });
+          if (!response.ok) {
+            throw new Error('Failed to save display name');
+          }
+          const data = (await response.json()) as { displayName: string };
+          setServerStats((current) => (current ? { ...current, displayName: data.displayName } : current));
+          setShowNameModal(false);
+        }}
+      />
     </main>
   );
 }

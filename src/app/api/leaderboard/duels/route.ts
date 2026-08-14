@@ -5,11 +5,9 @@ import { attachSessionCookie, resolveSession } from "../../../../backend/service
 export async function GET(request: NextRequest) {
   const session = resolveSession(request);
 
-  const stats = session.isNew
-    ? { solvedCount: 0, currentStreak: 0, maxStreak: 0, bestChainLength: null, displayName: null }
-    : await services.results.getUserStats(session.userId);
+  const rankings = await services.leaderboard.getDuelRankings();
 
-  const response = NextResponse.json(stats, { status: 200 });
+  const response = NextResponse.json({ viewerUserId: session.userId, rankings }, { status: 200 });
   attachSessionCookie(response, session.userId);
   return response;
 }

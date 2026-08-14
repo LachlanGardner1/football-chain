@@ -55,6 +55,10 @@ function resolveSlot(row: { player_a_user_id: string; player_b_user_id: string |
   return null;
 }
 
+const DUEL_RATING_DELTA = 50; // flat for now - see db/migrations/019 for why this is isolated
+// so real ELO math (K-factor, opponent-rating-aware deltas) can replace it later without a
+// schema change.
+
 async function ensureUser(client: PoolClient, userId: string): Promise<void> {
   await client.query(
     `INSERT INTO users (id, username) VALUES ($1::uuid, $2) ON CONFLICT (id) DO NOTHING`,
@@ -291,6 +295,8 @@ export class PgSpeedRoundRepository implements SpeedRoundRepository {
         [matchId, callerUserId],
       );
 
+      await this.applyRatingIfNeeded(client, matchId);
+
       const finalRow = await selectMatchRow(client, matchId);
       if (!finalRow) {
         throw new Error(`Speed round match ${matchId} not found.`);
@@ -353,6 +359,8 @@ export class PgSpeedRoundRepository implements SpeedRoundRepository {
         [matchId, chainJson, userId],
       );
 
+      await this.applyRatingIfNeeded(client, matchId);
+
       await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK");
@@ -360,6 +368,50 @@ export class PgSpeedRoundRepository implements SpeedRoundRepository {
     } finally {
       client.release();
     }
+  }
+
+  // Claims exactly one rating application for this match. winner_user_id can be set from two
+  // different call sites in this file (recordFinish's normal solve path, and getMatchState's
+  // forfeit-timeout branch) - both already guard the winner-set itself with
+  // COALESCE(winner_user_id, ...), but nothing stops the rating *side effect* from being
+  // attempted twice if both paths ever fire for the same match (e.g. a losing player's own late
+  // recordFinish call after a forfeit already resolved it, or a stale poll re-entering the
+  // forfeit branch). This UPDATE...RETURNING only succeeds once: the row lock already implicit
+  // in both callers' transactions serializes any real race, and rating_applied_at IS NULL means
+  // a second attempt (in the same or a later transaction) gets zero rows back and no-ops.
+  private async applyRatingIfNeeded(client: PoolClient, matchId: number): Promise<void> {
+    const claim = await client.query<{
+      winner_user_id: string;
+      player_a_user_id: string;
+      player_b_user_id: string | null;
+    }>(
+      `UPDATE speed_round_matches
+       SET rating_applied_at = NOW()
+       WHERE id = $1
+         AND status = 'FINISHED'
+         AND winner_user_id IS NOT NULL
+         AND rating_applied_at IS NULL
+       RETURNING winner_user_id, player_a_user_id, player_b_user_id`,
+      [matchId],
+    );
+
+    const row = claim.rows[0];
+    if (!row || !row.player_b_user_id) return; // no claim won, or (defensively) an incomplete match
+
+    const loserUserId = row.winner_user_id === row.player_a_user_id ? row.player_b_user_id : row.player_a_user_id;
+
+    await client.query(
+      `INSERT INTO user_duel_ratings (user_id) VALUES ($1::uuid), ($2::uuid) ON CONFLICT (user_id) DO NOTHING`,
+      [row.winner_user_id, loserUserId],
+    );
+    await client.query(
+      `UPDATE user_duel_ratings SET wins = wins + 1, rating = rating + $2, updated_at = NOW() WHERE user_id = $1::uuid`,
+      [row.winner_user_id, DUEL_RATING_DELTA],
+    );
+    await client.query(
+      `UPDATE user_duel_ratings SET losses = losses + 1, rating = rating - $2, updated_at = NOW() WHERE user_id = $1::uuid`,
+      [loserUserId, DUEL_RATING_DELTA],
+    );
   }
 
   private async loadAnchorPlayers(client: PoolClient, puzzleId: number): Promise<Array<{ id: number; name: string }>> {
