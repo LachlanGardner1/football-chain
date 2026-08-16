@@ -10,14 +10,27 @@ export type SuggestionEntry = CatalogEntry & {
 
 export type ChainStepLike = { id: number | null; type: 'PLAYER' | 'CLUB' };
 
-// Mirrors scripts/normalize-name.ts's accent-folding (NFD-decompose, strip combining marks)
-// so typing the plain ASCII "Suarez" finds "Luis Suárez" in the suggestion dropdown - without
-// this, a query and a name only match when the user types the accent themselves, which most
-// players won't. Kept as a small local duplicate rather than a cross-module import since the
-// two call sites (DB dedup-key normalization vs. client-side search) have no other reason to
-// share code.
+// Mirrors scripts/normalize-name.ts's accent-folding (character substitution for letters with
+// no canonical Unicode decomposition, then NFD-decompose + strip combining marks) so typing
+// "Odegaard" or "Suarez" finds "Martin Ødegaard" / "Luis Suárez" in the suggestion dropdown -
+// without this, a query only matches when the user types the accent/special letter themselves,
+// which most players won't. Kept as a small local duplicate rather than a cross-module import
+// since the two call sites (DB dedup-key normalization vs. client-side search) have no other
+// reason to share code. Lowercases internally (unlike normalizeName, which lowercases as one
+// step of a longer trim/lowercase/fold pipeline) so this function is correct standalone no
+// matter what a caller passes in; both call sites below already lowercase before calling it
+// too, which is harmless since lowercasing twice is a no-op.
+const NON_DECOMPOSING_LETTER_MAP: Record<string, string> = {
+  ø: 'o', đ: 'd', ł: 'l', æ: 'ae', œ: 'oe', ß: 'ss',
+};
+const NON_DECOMPOSING_LETTER_PATTERN = /[øđłæœß]/g;
+
 export function foldAccents(value: string): string {
-  return value.normalize('NFD').replace(/[̀-ͯ]/g, '');
+  return value
+    .toLowerCase()
+    .replace(NON_DECOMPOSING_LETTER_PATTERN, (char) => NON_DECOMPOSING_LETTER_MAP[char])
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '');
 }
 
 // Shared by both places page.tsx needs to know which player/club keys are already

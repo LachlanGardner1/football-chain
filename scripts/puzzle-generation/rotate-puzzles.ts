@@ -41,12 +41,13 @@ export const GENERATION_SCREENING_NODE_BUDGET = 20_000;
 export const MIN_EXTRA_CHAIN_LENGTH = 2;
 export const MAX_CHAIN_LENGTH = 13;
 export const ANCHOR_COUNT_CHOICES = [3, 4];
-// Deliberately stricter than the import's own 8M/20-cap inclusion bar (which only decides
-// whether a player is in the graph at all) - "graph-eligible" and "anchor-worthy" are
-// different bars. Connecting players in the middle of a chain still come from the full
-// graph; only the *named* anchors are restricted to this pool, since that's what actually
-// determines whether a puzzle feels fair vs. obscure. Tune freely - as of writing this
-// leaves a ~550-player pool (checked directly against the live catalog).
+// Deliberately much stricter than the import's own inclusion bar (which is now just a
+// non-empty-name floor - the DB-wide catalog includes essentially every player in the raw
+// dataset, so search/chain-building isn't missing real players) - "graph-eligible" and
+// "anchor-worthy" are very different bars. Connecting players in the middle of a chain still
+// come from the full graph; only the *named* anchors are restricted to this pool, since that's
+// what actually determines whether a puzzle feels fair vs. obscure. Tune freely - as of
+// writing this leaves a ~550-player pool (checked directly against the live catalog).
 //
 // Caps is no longer an alternate qualifying path (originally OR'd in at 40, then raised to
 // 80) - it turned out to be a structurally weak global-fame proxy no matter how high the bar

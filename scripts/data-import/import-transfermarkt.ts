@@ -14,20 +14,18 @@ const { Pool } = pg;
 const DATA_BASE_URL = "https://pub-e682421888d945d684bcae8890b0ec20.r2.dev/data";
 const CACHE_DIR = path.join(process.cwd(), "scripts/data-import/.cache");
 
-// A player qualifies if either threshold is met - market value alone undersells
-// older/retired legends and goalkeepers, so international caps catches those too.
-const MIN_HIGHEST_MARKET_VALUE_EUR = 8_000_000;
-const MIN_INTERNATIONAL_CAPS = 20;
-
 const SOURCE_NAME = "transfermarkt-datasets";
 // transfers.csv has zero rows for some real, well-known players (confirmed directly: Xabi
 // Alonso, now a manager rather than an active player, has none at all) - most likely because
 // this dataset prioritizes currently-rostered squads. player_valuations.csv covers a lot of
 // that gap (confirmed 85.8% of the players left with zero transfers-derived edges have at
 // least one valuation row, cross-checked against 6 real career histories including Xabi
-// Alonso, Iniesta, Hazard, Bale, Rooney, Xavi - all correct), so it's used as a fallback
-// specifically for players the primary transfers-derived pass didn't reach. Tagged with its
-// own source_name so these edges stay identifiable/auditable later.
+// Alonso, Iniesta, Hazard, Bale, Rooney, Xavi - all correct). It now runs for every selected
+// player, not just players transfers.csv left with zero edges - a player with SOME real
+// transfer edges can still have a real gap (a missing stint), and restricting valuation edges
+// to clubs not already covered by that player's real edges (see realCoveredClubKeysByPlayer
+// below) keeps this additive rather than duplicative. Tagged with its own source_name so these
+// edges stay identifiable/auditable later.
 const VALUATION_FALLBACK_SOURCE_NAME = "transfermarkt-datasets-valuations";
 const BATCH_SIZE = 500;
 
@@ -203,17 +201,15 @@ async function main(): Promise<void> {
     });
   }
 
-  const selectedPlayers = allPlayers.filter((player) => {
-    const value = Number(player.highest_market_value_in_eur || 0);
-    const caps = Number(player.international_caps || 0);
-    return value >= MIN_HIGHEST_MARKET_VALUE_EUR || caps >= MIN_INTERNATIONAL_CAPS;
-  });
+  // Only a data-quality floor, not a fame filter - the DB-wide catalog should include
+  // essentially every player in the raw dataset, so search/chain-building isn't missing real
+  // players. Which players are famous enough to be a puzzle *anchor* is decided separately and
+  // much more strictly, at generation time, by ANCHOR_MIN_MARKET_VALUE_EUR in
+  // scripts/puzzle-generation/rotate-puzzles.ts - not duplicated or loosened here.
+  const selectedPlayers = allPlayers.filter((player) => player.name && player.name.trim().length > 0);
   const selectedPlayerById = new Map(selectedPlayers.map((player) => [player.player_id, player]));
 
-  console.log(
-    `Selected ${selectedPlayers.length} of ${allPlayers.length} players ` +
-      `(peak value >= EUR ${(MIN_HIGHEST_MARKET_VALUE_EUR / 1_000_000).toFixed(0)}M OR >= ${MIN_INTERNATIONAL_CAPS} caps).`,
-  );
+  console.log(`Selected ${selectedPlayers.length} of ${allPlayers.length} players (non-empty name).`);
 
   const transfersByPlayer = new Map<string, TransferRow[]>();
   let skippedUnresolved = 0;
@@ -246,22 +242,37 @@ async function main(): Promise<void> {
     });
   }
 
-  // Fallback: players.csv/transfers.csv leave some real, well-known players with zero edges
-  // (see the VALUATION_FALLBACK_SOURCE_NAME comment above). Only players the primary pass
-  // didn't reach are looked up here, so there's no overlap/collision risk with derivedEdges.
-  const playersWithTransferEdges = new Set(derivedEdges.map((edge) => edge.playerTmId));
-  const fallbackPlayerIds = new Set(
-    selectedPlayers.filter((player) => !playersWithTransferEdges.has(player.player_id)).map((player) => player.player_id),
-  );
+  // Per-player set of clubs already covered by a real transfers.csv-derived edge, keyed by
+  // normalized club name (matching how valuation-derived edges resolve clubs - see
+  // ValuationDerivedEdge's comment). Used below to keep the valuation pass additive (fills real
+  // gaps in a player's history) rather than duplicative (re-describing a club the real data
+  // already has, possibly with different start/end year boundaries that player_clubs's unique
+  // constraint on (player_id, club_id, dataset_version_id, start_year, end_year) wouldn't catch
+  // as an exact duplicate).
+  const realCoveredClubKeysByPlayer = new Map<string, Set<string>>();
+  for (const edge of derivedEdges) {
+    const clubInfo = clubByTmId.get(edge.clubTmId);
+    if (!clubInfo) continue;
+    const set = realCoveredClubKeysByPlayer.get(edge.playerTmId) ?? new Set<string>();
+    set.add(normalizeName(clubInfo.name));
+    realCoveredClubKeysByPlayer.set(edge.playerTmId, set);
+  }
+
+  // Every selected player is a candidate for club-history supplementation from
+  // player_valuations.csv, not just players transfers.csv left with zero edges (see
+  // VALUATION_FALLBACK_SOURCE_NAME below) - a player with SOME real transfer edges can still
+  // have real gaps (missing stints). realCoveredClubKeysByPlayer above keeps this additive for
+  // players who already have full real coverage of a given club.
+  const valuationFallbackPlayerIds = new Set(selectedPlayers.map((player) => player.player_id));
 
   let valuationDerivedEdges: ValuationDerivedEdge[] = [];
-  if (fallbackPlayerIds.size > 0) {
+  if (valuationFallbackPlayerIds.size > 0) {
     const valuationsCsv = await downloadAndCacheCsv("player_valuations");
     const allValuations = parseCsv<PlayerValuationRow>(valuationsCsv);
 
     const valuationsByPlayer = new Map<string, PlayerValuationRow[]>();
     for (const row of allValuations) {
-      if (!fallbackPlayerIds.has(row.player_id)) continue;
+      if (!valuationFallbackPlayerIds.has(row.player_id)) continue;
       if (!isRealClubValuationName(row.current_club_name)) continue;
       const list = valuationsByPlayer.get(row.player_id) ?? [];
       list.push(row);
@@ -269,18 +280,26 @@ async function main(): Promise<void> {
     }
 
     for (const [playerTmId, rows] of valuationsByPlayer) {
-      valuationDerivedEdges.push(...deriveValuationEdgesForPlayer(playerTmId, rows));
+      const covered = realCoveredClubKeysByPlayer.get(playerTmId);
+      const edges = deriveValuationEdgesForPlayer(playerTmId, rows);
+      const supplemental = covered ? edges.filter((edge) => !covered.has(normalizeName(edge.clubName))) : edges;
+      valuationDerivedEdges.push(...supplemental);
     }
   }
 
-  const stillUnresolvedPlayerCount = fallbackPlayerIds.size - new Set(valuationDerivedEdges.map((edge) => edge.playerTmId)).size;
+  const playersWithAnyEdge = new Set([
+    ...derivedEdges.map((edge) => edge.playerTmId),
+    ...valuationDerivedEdges.map((edge) => edge.playerTmId),
+  ]);
+  const zeroHistoryPlayerCount = selectedPlayers.length - playersWithAnyEdge.size;
 
   console.log(
     `Derived ${derivedEdges.length} player-club stints from transfers.csv ` +
       `(${skippedUnresolved} transfer rows skipped as unresolved destinations), plus ` +
-      `${valuationDerivedEdges.length} fallback stints from player_valuations.csv for ` +
-      `${fallbackPlayerIds.size - stillUnresolvedPlayerCount} of ${fallbackPlayerIds.size} players who had zero transfers-derived edges ` +
-      `(${stillUnresolvedPlayerCount} still have no derivable history in either source).`,
+      `${valuationDerivedEdges.length} supplemental stints from player_valuations.csv for ` +
+      `${new Set(valuationDerivedEdges.map((edge) => edge.playerTmId)).size} players with a real gap ` +
+      `(zero transfers-derived edges, or a club-history stint transfers.csv didn't cover) ` +
+      `(${zeroHistoryPlayerCount} players still have no derivable history in either source).`,
   );
 
   // Merge both sources into one referenced-club list, resolved by normalized name throughout

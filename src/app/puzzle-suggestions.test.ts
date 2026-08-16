@@ -48,6 +48,24 @@ test('returns no entries for an empty query', () => {
   assert.deepStrictEqual(getVisibleCatalogEntries(clubs, '   '), []);
 });
 
+test('folds letters with no Unicode NFD decomposition (o slash, d stroke, l stroke, ae, oe, sharp s)', () => {
+  const players = [
+    { id: 1, name: 'Martin Ødegaard' },
+    { id: 2, name: 'Đorđe Petrović' },
+    { id: 3, name: 'Łukasz Testperson' },
+    { id: 4, name: 'Æsæ Testperson' },
+    { id: 5, name: 'Œdipus Testperson' },
+    { id: 6, name: 'Straße Testperson' },
+  ];
+
+  assert.deepStrictEqual(getVisibleCatalogEntries(players, 'odegaard').map((entry) => entry.id), [1]);
+  assert.deepStrictEqual(getVisibleCatalogEntries(players, 'dorde').map((entry) => entry.id), [2]);
+  assert.deepStrictEqual(getVisibleCatalogEntries(players, 'lukasz').map((entry) => entry.id), [3]);
+  assert.deepStrictEqual(getVisibleCatalogEntries(players, 'aesae').map((entry) => entry.id), [4]);
+  assert.deepStrictEqual(getVisibleCatalogEntries(players, 'oedipus').map((entry) => entry.id), [5]);
+  assert.deepStrictEqual(getVisibleCatalogEntries(players, 'strasse').map((entry) => entry.id), [6]);
+});
+
 test('getUsedEntryKeys only counts steps marked valid', () => {
   const steps = [
     { id: 1, type: 'CLUB' as const },
