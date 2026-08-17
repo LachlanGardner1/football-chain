@@ -170,6 +170,11 @@ export default function HomePage() {
   const [nextStepsReveal, setNextStepsReveal] = useState<{ fromLabel: string; steps: Array<{ label: string; type: 'PLAYER' | 'CLUB' }> } | null>(null);
   const [nextStepsLoading, setNextStepsLoading] = useState(false);
   const [nextStepsMessage, setNextStepsMessage] = useState<string | null>(null);
+  // Once a player step validates, the next (club) row narrows from a free-text search over the
+  // whole catalog to a dropdown of just that player's real clubs - keyed by player id so it's
+  // naturally shared/cached if the same player is ever looked up twice in one session.
+  const [playerClubsCache, setPlayerClubsCache] = useState<Record<number, CatalogEntry[]>>({});
+  const playerClubsFetchedRef = useRef<Set<number>>(new Set());
   const validationRequestIdRef = useRef(0);
   const invalidSubmissionCountRef = useRef(0);
   // Hints are a shared pool server-side (spending one during the official round still counts
@@ -341,10 +346,31 @@ export default function HomePage() {
     return puzzle.anchorPlayers.filter((player) => !playerIdsInChain.includes(player.id));
   }, [puzzle, steps, stepValidationStates]);
 
+  function fetchPlayerClubs(playerId: number) {
+    if (playerClubsFetchedRef.current.has(playerId)) return;
+    playerClubsFetchedRef.current.add(playerId);
+
+    apiFetch(`/api/player/${playerId}/clubs`)
+      .then((res) => res.json())
+      .then((data: { clubs: CatalogEntry[] }) => {
+        setPlayerClubsCache((current) => ({ ...current, [playerId]: data.clubs }));
+      })
+      .catch(() => {
+        // Allow a retry later - the render falls back to free-text search until this resolves.
+        playerClubsFetchedRef.current.delete(playerId);
+      });
+  }
+
   function appendNextStep() {
     setSteps((current) => {
       const nextIndex = current.length;
       const expectedType = nextIndex % 2 === 0 ? 'PLAYER' : 'CLUB';
+      if (expectedType === 'CLUB') {
+        const precedingPlayerId = current[current.length - 1]?.id;
+        if (precedingPlayerId !== null && precedingPlayerId !== undefined) {
+          fetchPlayerClubs(precedingPlayerId);
+        }
+      }
       return [...current, { id: null, type: expectedType }];
     });
     setStepSearchValues((current) => ({ ...current, [steps.length]: '' }));
@@ -1075,12 +1101,48 @@ export default function HomePage() {
                 const rowStateClass = validationState ? ` step-row--${validationState}` : '';
                 const shakeClass = invalidStepIndex === index ? ' step-row--shake' : '';
 
+                // Once the preceding player step has validated, narrow this club row to a
+                // dropdown of just that player's real clubs instead of a free-text search over
+                // every club - falls back to the free-text UI below while that fetch is still in
+                // flight, if it failed, or (a genuine data gap) the player has zero linked clubs.
+                const precedingPlayerId = expectedType === 'CLUB' ? steps[index - 1]?.id ?? null : null;
+                const playerClubOptions = precedingPlayerId !== null ? playerClubsCache[precedingPlayerId] : undefined;
+                const showClubDropdown = expectedType === 'CLUB' && !!playerClubOptions && playerClubOptions.length > 0;
+
                 return (
                   <div className="step-block" key={`${expectedType}-${index}`}>
                     <div key={`shake-${shakeKey}-${index}`} className={`step-row${rowStateClass}${shakeClass}`}>
                       <div className="step-type-badge">{expectedType === 'PLAYER' ? 'Player' : 'Club'}</div>
 
                       <div className="step-input-wrap">
+                        {showClubDropdown ? (
+                          <select
+                            value={step.id ?? ''}
+                            disabled={validationState === 'valid'}
+                            onChange={(event) => {
+                              const clubId = Number(event.target.value);
+                              const entry = playerClubOptions!.find((club) => club.id === clubId);
+                              if (entry) {
+                                selectSuggestion(index, entry, 'CLUB');
+                              }
+                            }}
+                            className={`step-input step-select${selectedLabel !== 'Select an option' ? ' step-input--filled' : ''}`}
+                          >
+                            <option value="" disabled>
+                              Select a club...
+                            </option>
+                            {[...playerClubOptions!].sort(sortMatches).map((club) => {
+                              const isRepeatedLink = usedEntryKeys.has(nodeKey('CLUB', club.id));
+                              return (
+                                <option key={club.id} value={club.id}>
+                                  {club.name}
+                                  {isRepeatedLink ? ' (already used)' : ''}
+                                </option>
+                              );
+                            })}
+                          </select>
+                        ) : (
+                        <>
                         <input
                           value={rawQuery}
                           disabled={validationState === 'valid'}
@@ -1141,6 +1203,8 @@ export default function HomePage() {
                             })}
                           </div>
                         ) : null}
+                        </>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -1889,6 +1953,16 @@ export default function HomePage() {
 
         .step-input::placeholder {
           color: var(--ink-muted);
+        }
+
+        .step-select {
+          appearance: auto;
+          cursor: pointer;
+        }
+
+        .step-select:disabled {
+          opacity: 0.85;
+          cursor: default;
         }
 
         .suggestions {
