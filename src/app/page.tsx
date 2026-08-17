@@ -128,6 +128,10 @@ export default function HomePage() {
   const [catalog, setCatalog] = useState<{ players: CatalogEntry[]; clubs: CatalogEntry[] }>({ players: [], clubs: [] });
   const [steps, setSteps] = useState<ChainNode[]>([{ id: null, type: 'PLAYER' }]);
   const [stepSearchValues, setStepSearchValues] = useState<Record<number, string>>({});
+  // Mirrors stepSearchValues after a short delay, so the suggestion list (a linear scan over
+  // the full player/club catalog) isn't recomputed on every keystroke - the input itself stays
+  // on stepSearchValues directly so typing feels instant either way.
+  const [debouncedSearchValues, setDebouncedSearchValues] = useState<Record<number, string>>({});
   const [stepShowSuggestions, setStepShowSuggestions] = useState<Record<number, boolean>>({});
   const [result, setResult] = useState<ValidationResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -283,14 +287,23 @@ export default function HomePage() {
     setError(null);
     fetchServerStats();
 
-    Promise.all([apiFetch(`/api/daily?date=${encodeURIComponent(date)}`).then((res) => res.json()), apiFetch('/api/catalog').then((res) => res.json())])
-      .then(([puzzleData, catalogData]) => {
+    // Fetched independently of the puzzle itself - the "Today's puzzle" panel below never
+    // reads catalog data, so it shouldn't be held up waiting on this (larger, slower) payload.
+    // Failure here should just leave autocomplete without suggestions, not surface as a puzzle
+    // load error.
+    apiFetch('/api/catalog')
+      .then((res) => res.json())
+      .then(setCatalog)
+      .catch(() => undefined);
+
+    apiFetch(`/api/daily?date=${encodeURIComponent(date)}`)
+      .then((res) => res.json())
+      .then((puzzleData) => {
         if (puzzleData.error) {
           setError(puzzleData.error);
           return;
         }
         setPuzzle(puzzleData);
-        setCatalog(catalogData);
         logDebug('Loaded puzzle payload', {
           puzzleId: puzzleData.puzzleId,
           date,
@@ -332,6 +345,11 @@ export default function HomePage() {
   useEffect(() => {
     loadPuzzle(selectedDate);
   }, [selectedDate]);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setDebouncedSearchValues(stepSearchValues), 150);
+    return () => window.clearTimeout(timeout);
+  }, [stepSearchValues]);
 
   const remainingAnchorPlayers = useMemo(() => {
     if (!puzzle) return [];
@@ -1095,7 +1113,7 @@ export default function HomePage() {
                 const usedEntryKeys = getUsedEntryKeys(steps, stepValidationStates, {
                   excludeIndex: index,
                 });
-                const visibleEntries = getVisibleCatalogEntries(entries, rawQuery, usedEntryKeys, expectedType);
+                const visibleEntries = getVisibleCatalogEntries(entries, debouncedSearchValues[index] ?? '', usedEntryKeys, expectedType);
                 const selectedLabel = getDisplayLabel(step);
                 const validationState = stepValidationStates[index];
                 const rowStateClass = validationState ? ` step-row--${validationState}` : '';

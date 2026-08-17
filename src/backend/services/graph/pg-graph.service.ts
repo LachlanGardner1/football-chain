@@ -2,7 +2,22 @@ import type { GraphRepository } from "../../domain/repositories";
 import type { GraphNode, GraphService } from "./graph-types";
 import { fromNodeId, toNodeId } from "./graph-types";
 
+// Rebuilding the adjacency map means a full scan of player_clubs (500k+ rows) plus two joins -
+// cheap once, but revealNextSteps calls shortestPathAvoiding once per unvisited anchor (up to
+// O(n^2) when no chain steps are confirmed yet, see hint.service.ts), so a single hint click
+// could otherwise trigger that scan several times over. Caching here (this instance is a
+// module-level singleton per src/backend/wiring/container.ts, reused across warm invocations
+// of the same Lambda the same way src/backend/repositories/postgres/db.ts's pgPool is) means
+// only the first buildAdjacency() call per warm instance (or per cache expiry) pays that cost.
+// Keyed by datasetVersionId so a real dataset-version change invalidates it automatically; the
+// TTL on top is insurance against corrective migrations that UPDATE player_clubs/clubs rows in
+// place without bumping dataset_version_id (this repo has two precedents for that:
+// db/migrations/007_merge_duplicate_clubs.sql and 020_merge_duplicate_club_name_variants.sql).
+const ADJACENCY_CACHE_TTL_MS = 15 * 60 * 1000;
+
 export class PgGraphService implements GraphService {
+  private adjacencyCache: { datasetVersionId: number; adjacency: Map<string, Set<string>>; cachedAt: number } | null = null;
+
   constructor(private readonly graphRepository: GraphRepository) {}
 
   async hasEdge(a: GraphNode, b: GraphNode): Promise<boolean> {
@@ -52,12 +67,20 @@ export class PgGraphService implements GraphService {
 
   private async buildAdjacency(): Promise<Map<string, Set<string>>> {
     const datasetVersionId = await this.graphRepository.getActiveDatasetVersionId();
+
+    const cache = this.adjacencyCache;
+    if (cache && cache.datasetVersionId === datasetVersionId && Date.now() - cache.cachedAt < ADJACENCY_CACHE_TTL_MS) {
+      return cache.adjacency;
+    }
+
     const edges = await this.graphRepository.loadPlayerClubEdges(datasetVersionId);
 
     const adjacency = new Map<string, Set<string>>();
     for (const edge of edges) {
       connect(adjacency, { id: edge.playerId, type: "PLAYER" }, { id: edge.clubId, type: "CLUB" });
     }
+
+    this.adjacencyCache = { datasetVersionId, adjacency, cachedAt: Date.now() };
     return adjacency;
   }
 }

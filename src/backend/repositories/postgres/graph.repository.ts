@@ -19,12 +19,14 @@ export class PgGraphRepository implements GraphRepository {
     return row.id;
   }
 
+  // Only production caller is PgGraphService.buildAdjacency(), which builds a player<->club
+  // adjacency map from playerId/clubId alone - no name columns needed, so this skips the
+  // players/clubs joins that PgGraphService's own name-lookup path (getPlayerName/getClubName)
+  // already handles separately when a name is actually needed.
   async loadPlayerClubEdges(datasetVersionId: number): Promise<Array<{ playerId: number; clubId: number; playerName?: string; clubName?: string }>> {
-    const result = await pgPool.query<{ player_id: string; club_id: string; player_name: string; club_name: string }>(
-      `SELECT pc.player_id, pc.club_id, p.canonical_name AS player_name, c.canonical_name AS club_name
+    const result = await pgPool.query<{ player_id: string; club_id: string }>(
+      `SELECT pc.player_id, pc.club_id
        FROM player_clubs pc
-       JOIN players p ON p.id = pc.player_id
-       JOIN clubs c ON c.id = pc.club_id
        WHERE pc.dataset_version_id = $1`,
       [datasetVersionId],
     );
@@ -32,8 +34,6 @@ export class PgGraphRepository implements GraphRepository {
     return result.rows.map((row) => ({
       playerId: Number(row.player_id),
       clubId: Number(row.club_id),
-      playerName: row.player_name,
-      clubName: row.club_name,
     }));
   }
 
